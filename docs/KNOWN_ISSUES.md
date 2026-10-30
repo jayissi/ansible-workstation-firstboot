@@ -892,3 +892,79 @@ vault-ssh-helper download uses `validate_certs: false` + pinned
 SHA-256 checksum as a compensating control. The `rpm_key` module has
 no `validate_certs` option for the Microsoft GPG key case, making
 FUTURE policy impractical without broader CDN/repository changes.
+
+### Customer Operational Review — Priority Backlog
+
+The following items were identified during the customer operational
+review and are pending engineering discussion. Listed in recommended
+priority order (highest risk / most blocking first).
+
+**Priority 1 — Vault backup and disaster recovery (§2.b):**
+No automated backup exists today. Define Raft snapshot frequency
+(`vault operator raft snapshot save`), retention policy, encrypted
+off-site storage, restoration procedure, and RPO/RTO targets. Decide
+whether backup encryption should use the same age+TPM2 pattern as
+unseal keys or a separate key hierarchy (same TPM2 binding creates a
+single point of failure — lose the TPM chip, lose both unseal keys
+and backups). Document a TPM2 disaster recovery procedure: steps for
+recovering Vault secrets when the original hardware is unavailable,
+using only the passphrase-based `.age.pass` backup and a Raft
+snapshot.
+
+**Priority 2 — Vault version updates and patch management (§2.c):**
+Vault is installed via direct binary download with SHA-256 checksum
+verification, not through the OS package manager. Updates are not
+automatic — `vault_version` must be changed and the playbook re-run.
+Define the update process: staging environment testing, mandatory
+pre-upgrade Raft snapshot, rollback procedure (downgrade can corrupt
+Raft storage if a schema migration occurred), and criteria for
+distinguishing security patches from feature releases. Determine
+whether updates should remain manually approved or follow a
+controlled automation path.
+
+**Priority 3 — Firewall, SELinux, fapolicyd, and Nginx compatibility
+for LAN access (§1.b):**
+If DNS and Vault are exposed to the LAN, scope the security control
+changes required: firewall zone/service rules, SELinux port contexts
+and new policy modules, fapolicyd trust entries for any new binaries,
+Nginx path allowlist expansion (currently only `/v1/ssh-otp/creds/`
+and `/v1/ssh-ca/sign/`), and systemd sandboxing adjustments. Key
+architectural decision: should Vault's listener move to `0.0.0.0:8200`
+(full API surface to LAN, relying on Vault auth/authz alone), or
+should Nginx remain the LAN-facing ingress with broader path
+allowlists (defense-in-depth, API surface reduction)?
+
+**Priority 4 — VaultPass extension updates and browser security
+(§2.d):**
+VaultPass is a third-party browser extension, not maintained by
+HashiCorp. Updates are handled by the browser's extension auto-update
+mechanism (Firefox AMO / Chrome Web Store), not by this project.
+Define: private/incognito mode permission policy (requires explicit
+"allow in private windows" per browser), centralized version control
+via browser enterprise policies (partially in place for DoH lockdown),
+extension supply-chain risk assessment (compromised update could
+exfiltrate Vault tokens), and compatibility testing process for new
+extension versions against the deployed Vault version.
+
+**Priority 5 — Vault migration strategy (§2.a):**
+Less urgent if Priority 1 (backup/recovery) is solid, since migration
+is effectively "restore to different hardware." Key constraint:
+TPM2-bound unseal keys are tied to the original machine's TPM chip.
+Migration to new hardware requires the passphrase-based `.age.pass`
+backup. Scope: Raft data directory, Vault configuration, TLS
+certificates, SELinux policy modules, AppRole credentials, and DNS
+re-binding.
+
+**Priority 6 — Monitoring and alerting:**
+No monitoring exists beyond systemd service restart and journald
+logging. Vault audit devices are configured (file + syslog) but there
+is no alerting on authentication failures, seal events, or service
+outages. Define monitoring scope for Vault availability, DNS
+availability, certificate expiry, and authentication anomalies.
+
+**Priority 7 — Incident response runbook:**
+No documented procedure for compromised credentials. Existing
+capabilities: root token rotation (`make vault-rotate-root-token`),
+break-glass SSH cert auto-renewal, AppRole secret_id re-provisioning
+on restart. Missing: documented procedure for suspected compromise of
+unseal keys, root token backup, or Vault Agent tokens.
