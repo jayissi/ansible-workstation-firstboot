@@ -5,12 +5,15 @@
 default: true
 
 # MD013/line-length - match yamllint max (200)
+# tables: false because markdown-table-formatter pads columns to
+# alignment widths that often exceed 200 chars for wide tables
+# (confirmed: ARCHITECTURE.md + SECURITY.md Phase 2 tier table).
 MD013:
   line_length: 200
   heading_line_length: 200
   code_block_line_length: 200
   code_blocks: true
-  tables: true
+  tables: false
   headings: true
   strict: false
 

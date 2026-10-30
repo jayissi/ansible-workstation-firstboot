@@ -12,7 +12,7 @@ first PR; reviewers will check against it.
 - [Variable Naming](#variable-naming)
 - [Fully Qualified Collection Names (FQCN)](#fully-qualified-collection-names-fqcn)
 - [Booleans](#booleans)
-- [import\_tasks vs include\_tasks](#importtasks-vs-includetasks)
+- [Import Tasks vs Include Tasks](#import-tasks-vs-include-tasks)
 - [File and Directory Naming](#file-and-directory-naming)
 - [Role Structure](#role-structure)
 - [Key Ordering in Task Blocks](#key-ordering-in-task-blocks)
@@ -233,7 +233,7 @@ yamllint `truthy` rule with `allowed-values: ["true", "false"]` (config:
 
 ---
 
-## import_tasks vs include_tasks
+## Import Tasks vs Include Tasks
 
 | Use `import_tasks` when...        | Use `include_tasks` when...             |
 |-----------------------------------|-----------------------------------------|
