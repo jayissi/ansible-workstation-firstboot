@@ -34,9 +34,14 @@ See [docs/CONVENTIONS.md](docs/CONVENTIONS.md) for naming and style conventions.
 All linters must pass before merging:
 
 ```bash
-make lint                  # Run all linters inside Podman (single source of truth)
-make lint-fix              # Auto-fix ruff + table alignment (runs inside Podman)
+make lint                  # Auto-fix (ruff + table alignment), then run all linters inside Podman
 ```
+
+CI (`.github/workflows/lint.yml`) runs every tool directly, one job per
+tool, in verify-only mode (`ruff check .`, `markdown-table-formatter
+--check`, etc.) -- it never auto-fixes or pushes changes back to a PR
+branch. The auto-fix step is a local-only convenience baked into
+`make lint`; there is no separate `lint-fix` target or CI job.
 
 All linter configs live in the `lint/` directory (except `.ansible-lint`,
 `pyproject.toml`, and `.pre-commit-config.yaml` which must stay at the

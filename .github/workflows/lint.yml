@@ -106,7 +106,7 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements-lint.txt
-      - run: bandit -c pyproject.toml -r roles/common/ roles/dns/ roles/avahi/ roles/vault/ roles/proxy/ roles/verification/ playbooks/
+      - run: bandit -r roles/common/ roles/dns/ roles/avahi/ roles/vault/ roles/proxy/ roles/verification/ playbooks/
       - run: checkov --config-file lint/.checkov.yaml -d .
       - run: detect-secrets scan --baseline lint/.secrets.baseline
 
@@ -156,7 +156,7 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements-lint.txt
       - run: >-
-          codespell --config pyproject.toml
+          codespell
           inventory/ playbooks/ roles/common/ roles/dns/ roles/avahi/ roles/vault/ roles/proxy/ roles/verification/
           Makefile README.md CONTRIBUTING.md SECURITY.md docs/CHANGELOG.md pyproject.toml lint/
           ansible.cfg requirements-lint.txt requirements-rpm.txt .github/

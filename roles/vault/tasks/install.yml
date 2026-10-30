@@ -40,14 +40,26 @@
     group: "{{ item.group | default(vault_group) }}"
     mode: "{{ item.mode }}"
   loop:
-    - {path: "{{ vault_config_dir }}", mode: "0750"}
-    - {path: "{{ vault_data_dir }}", mode: "0750"}
-    - {path: "{{ vault_log_dir }}", mode: "0750"}
-    - {path: "{{ vault_cert_dir }}", mode: "0700"}
-    - {path: "{{ vault_run_dir }}", mode: "0700", owner: root, group: root}
-    - {path: "{{ vault_agent_run_dir }}", mode: "0700"}
-    - {path: "{{ vault_selinux_dir }}", mode: "0755", owner: root, group: root}
-    - {path: "{{ vault_config_dir }}/templates", mode: "0750"}
+    - path: "{{ vault_config_dir }}"
+      mode: "0750"
+    - path: "{{ vault_data_dir }}"
+      mode: "0750"
+    - path: "{{ vault_log_dir }}"
+      mode: "0750"
+    - path: "{{ vault_cert_dir }}"
+      mode: "0700"
+    - path: "{{ vault_run_dir }}"
+      mode: "0700"
+      owner: root
+      group: root
+    - path: "{{ vault_agent_run_dir }}"
+      mode: "0700"
+    - path: "{{ vault_selinux_dir }}"
+      mode: "0755"
+      owner: root
+      group: root
+    - path: "{{ vault_config_dir }}/templates"
+      mode: "0750"
 
 - name: Install | Apply SELinux file contexts to Vault directories
   ansible.builtin.command:

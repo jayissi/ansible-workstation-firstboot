@@ -435,3 +435,19 @@ collection internals:
 The `Containerfile.lint` CMD creates a `vault_pass.txt` placeholder
 before running `ansible-lint`, which expects the vault password file
 to exist even during lint-only container builds.
+
+**Single `make lint` target (auto-fix, then verify):** The lint venv
+lives at `/opt/.venv` inside the image -- outside `/workspace` -- so it
+is never shadowed when `make lint` bind-mounts the host checkout onto
+`/workspace` to write auto-fixes back (`-v $(CURDIR):/workspace:z`;
+if the venv lived inside `/workspace`, that mount would replace it
+with the host's own `.venv/`, which only has `ansible-core`, not the
+lint toolchain). `make lint` runs in this order: build the image,
+run `ruff check --fix` + `markdown-table-formatter` against the
+bind-mounted host files (writing fixes back to disk), rebuild the
+image (picking up the now-fixed files via `COPY . .`), then run the
+full read-only lint suite against that rebuilt image. There is no
+separate `lint-fix` target -- auto-fix is a local-only step inlined
+into `make lint`. CI (`.github/workflows/lint.yml`) runs every tool
+directly in verify-only mode and never auto-fixes or mutates a PR
+branch.

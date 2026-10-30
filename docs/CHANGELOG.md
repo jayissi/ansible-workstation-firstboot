@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- yamllint `brackets`/`braces: forbid: non-empty` -- enforces
+  block-style YAML sequences and mappings everywhere (Red Hat Ansible
+  best practice), while still allowing bare `[]`/`{}` for empty
+  collections since block-style has no syntax for an empty sequence
+
+### Fixed
+
+- Lint container venv-shadowing bug: `make lint`'s auto-fix step
+  bind-mounts the host checkout onto `/workspace`, which silently
+  replaced the image's lint-toolchain venv with the host's own
+  `ansible-core`-only venv (`ruff: command not found`). Moved the
+  lint venv to `/opt/.venv`, outside `/workspace`, so no bind-mount
+  can ever shadow it
+- Converted ~30 flow-style YAML sequences/mappings (`[a, b]` /
+  `{k: v}`) to block-style across task loop items, `.pre-commit-config.yaml`
+  hook `args`, and Vault policy bodies, to satisfy the new yamllint
+  rules
+
+### Changed
+
+- Removed the standalone `lint-fix` Makefile target; its auto-fix
+  recipe (ruff + markdown-table-formatter) is now inlined directly
+  into `lint`, which always auto-fixes then runs the full verify
+  suite in one step. CI remains verify-only and never auto-fixes
+
 ## [0.2.0] - 2026-10-30
 
 ### Added

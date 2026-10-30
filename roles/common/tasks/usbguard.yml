@@ -22,8 +22,10 @@
     regexp: "{{ item.regexp }}"
     line: "{{ item.line }}"
   loop:
-    - {regexp: "^IPCAllowedGroups=", line: "IPCAllowedGroups=wheel"}
-    - {regexp: "^AuditBackend=", line: "AuditBackend=LinuxAudit"}
+    - regexp: "^IPCAllowedGroups="
+      line: "IPCAllowedGroups=wheel"
+    - regexp: "^AuditBackend="
+      line: "AuditBackend=LinuxAudit"
   notify: Restart usbguard
 
 - name: Usbguard | Install usbguard-dbus (GNOME integration)

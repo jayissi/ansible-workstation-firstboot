@@ -37,16 +37,14 @@ galaxy: ## Download Galaxy roles and collections only
 # =============================================================================
 # Linting -- Podman only (single source of truth, keeps host clean)
 # =============================================================================
-.PHONY: lint lint-fix clean
+.PHONY: lint clean
 
-lint: ## Run all linters inside Podman container
-	podman build -t $(LINT_IMG) -f lint/Containerfile.lint .
-	podman run --rm $(LINT_IMG)
-
-lint-fix: ## Auto-fix ruff + table alignment (runs inside Podman, writes back via volume mount)
+lint: ## Auto-fix (ruff + table alignment), then run all linters inside Podman container
 	podman build -t $(LINT_IMG) -f lint/Containerfile.lint .
 	podman run --rm -v $(CURDIR):/workspace:z $(LINT_IMG) bash -c \
-		'. .venv/bin/activate && ruff check --fix . && markdown-table-formatter README.md CONTRIBUTING.md'
+		'. /opt/.venv/bin/activate && ruff check --fix . && markdown-table-formatter README.md CONTRIBUTING.md'
+	podman build -t $(LINT_IMG) -f lint/Containerfile.lint .
+	podman run --rm $(LINT_IMG)
 
 clean: ## Remove venv, caches, and lint container image
 	rm -rf .venv .ruff_cache

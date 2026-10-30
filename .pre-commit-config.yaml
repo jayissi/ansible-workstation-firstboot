@@ -6,17 +6,21 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
-        args: [--allow-multiple-documents]
+        args:
+          - --allow-multiple-documents
       - id: check-added-large-files
       - id: check-merge-conflict
       - id: mixed-line-ending
-        args: [--fix=lf]
+        args:
+          - --fix=lf
 
   - repo: https://github.com/adrienverge/yamllint
     rev: v1.35.1
     hooks:
       - id: yamllint
-        args: [-c, lint/.yamllint.yml]
+        args:
+          - -c
+          - lint/.yamllint.yml
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.5.0
@@ -27,7 +31,9 @@ repos:
     rev: v2.3.0
     hooks:
       - id: codespell
-        args: [--config, pyproject.toml]
+        args:
+          - --config
+          - pyproject.toml
 
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: v0.10.0.1
@@ -44,7 +50,9 @@ repos:
     rev: v1.5.0
     hooks:
       - id: detect-secrets
-        args: ['--baseline', 'lint/.secrets.baseline']
+        args:
+          - --baseline
+          - lint/.secrets.baseline
 
   - repo: https://github.com/rhysd/actionlint
     rev: v1.7.12
@@ -55,7 +63,9 @@ repos:
     rev: v0.23.0
     hooks:
       - id: markdownlint-cli2
-        args: [--config, lint/.markdownlint-cli2.yaml]
+        args:
+          - --config
+          - lint/.markdownlint-cli2.yaml
 
   - repo: https://github.com/hadolint/hadolint
     rev: v2.12.0
@@ -78,6 +88,8 @@ repos:
         name: markdown-table-formatter (table alignment check)
         language: node
         entry: markdown-table-formatter --check
-        additional_dependencies: ["markdown-table-formatter@1.7.0"]
-        types: [markdown]
+        additional_dependencies:
+          - markdown-table-formatter@1.7.0
+        types:
+          - markdown
         require_serial: true

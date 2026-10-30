@@ -573,6 +573,20 @@ would be wrong in both edge cases.
 | `sshd_session_t` domain targeting | **PR review**                            | This document                             |
 | Hardware detection patterns       | **PR review**                            | This document                             |
 
+### Linter Configuration Centralization
+
+All linter configuration that supports `pyproject.toml` **MUST** be
+centralized there (ruff, pyright, codespell, bandit). Per-tool config
+files in `lint/` are used **ONLY** for tools that lack `pyproject.toml`
+support (yamllint, markdownlint-cli2, checkov, hadolint, gitleaks, etc.).
+
+See the comment block at the top of `pyproject.toml` for the full list of
+tools and which file each uses.
+
+All TOML arrays in `pyproject.toml` use long format (one item per line).
+Comma-separated string values (e.g. codespell `skip`) stay as strings
+because that is the format the tool expects.
+
 All linters run via `make lint` inside the Podman container defined in
 `lint/Containerfile.lint`. See [../CONTRIBUTING.md](../CONTRIBUTING.md) for
 the development workflow.

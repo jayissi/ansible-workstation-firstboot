@@ -42,3 +42,16 @@ skip-check:
 
 compact: true
 quiet: true
+
+# ── Inline skip annotations (NOT in skip-check above) ──────────────
+#
+# CKV_ANSIBLE_2  "Ensure that certificate validation isn't disabled with get_url"
+#   Skipped INLINE in roles/auth/tasks/install.yml (one task only).
+#   checkov only supports global skip-check -- adding CKV_ANSIBLE_2
+#   here would silence the check project-wide, hiding future genuine
+#   violations. The inline skip is the narrowly-scoped, correct
+#   approach. The task downloads vault-ssh-helper from
+#   releases.hashicorp.com with validate_certs: false because the
+#   FUTURE crypto policy rejects the site's RSA 2048-bit leaf cert.
+#   Integrity is guaranteed by a pinned SHA-256 checksum (stronger
+#   than TLS cert validation alone).

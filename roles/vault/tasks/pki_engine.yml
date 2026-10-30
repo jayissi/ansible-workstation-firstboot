@@ -409,7 +409,9 @@
           X-Vault-Token: "{{ _vault_token }}"
         body_format: json
         body:
-          token_policies: ["vault-agent-tls", "vault-agent-auth"]
+          token_policies:
+            - vault-agent-tls
+            - vault-agent-auth
           token_ttl: "1h"
           token_max_ttl: "4h"
           secret_id_ttl: "0"
@@ -583,7 +585,8 @@
       X-Vault-Token: "{{ _vault_token }}"
     body_format: json
     body:
-      policies: ["vault-admin-full"]
+      policies:
+        - vault-admin-full
       display_name: "admin-daily"
       ttl: "0"
       no_parent: true
@@ -602,7 +605,8 @@
       X-Vault-Token: "{{ _vault_token }}"
     body_format: json
     body:
-      policies: ["vault-admin-readonly"]
+      policies:
+        - vault-admin-readonly
       display_name: "monitoring-readonly"
       ttl: "0"
       no_parent: true

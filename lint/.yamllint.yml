@@ -13,10 +13,22 @@ rules:
   comments:
     min-spaces-from-content: 1
   comments-indentation: disable
-  braces:
-    max-spaces-inside: 1
   octal-values:
     forbid-implicit-octal: true
+  # Enforce block-style YAML everywhere (Red Hat Ansible best practice --
+  # matches every official example playbook and ansible-doc module
+  # usage). Flow-style [a, b] / {k: v} is forbidden; use block-style
+  # lists/mappings instead, even for loop items. yamllint names these
+  # rules "brackets" ([]) and "braces" ({}) -- there is no
+  # "flow-sequence"/"flow-mapping" rule. "non-empty" (vs. "true") still
+  # allows bare [] / {} for empty collections, since block-style has no
+  # syntax for an empty sequence/mapping (matches linux-system-roles'
+  # own convention of `foo: []` for empty optional defaults).
+  brackets:
+    forbid: non-empty
+  braces:
+    max-spaces-inside: 1
+    forbid: non-empty
 
 ignore:
   - .venv/

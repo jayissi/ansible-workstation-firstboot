@@ -54,7 +54,7 @@ make venv     # Create venv, install ansible-core, download Galaxy roles
 
 source .venv/bin/activate
 ansible workstation -m ping   # Verify connectivity
-make lint                     # Run all linters (Podman container)
+make lint                     # Auto-fix, then run all linters (Podman container)
 make test                     # Syntax check
 make deploy                   # Full deployment
 make verify                   # Post-deploy assertions

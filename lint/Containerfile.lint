@@ -14,10 +14,18 @@ COPY .gitignore ./
 COPY collections/requirements.yml ./collections-requirements.yml
 COPY roles/requirements.yml ./roles-requirements.yml
 
-RUN python3 -m venv .venv && \
-    .venv/bin/python -m pip install --upgrade pip && \
-    .venv/bin/python -m pip install -r requirements-lint.txt && \
-    . .venv/bin/activate && \
+# The lint venv lives OUTSIDE /workspace (at /opt/.venv), not inside
+# it. `make lint`'s auto-fix step bind-mounts the host checkout onto
+# /workspace to write fixes back (-v $(CURDIR):/workspace:z) -- if the
+# venv lived inside /workspace, that bind-mount would shadow it with
+# the host's OWN .venv/ (ansible-core only, per this project's
+# venv/lint separation), leaving the container with no lint tools at
+# all. Confirmed via runtime testing: "ruff: command not found" when
+# the venv was at /workspace/.venv and the bind-mount shadowed it.
+RUN python3 -m venv /opt/.venv && \
+    /opt/.venv/bin/python -m pip install --upgrade pip && \
+    /opt/.venv/bin/python -m pip install -r requirements-lint.txt && \
+    . /opt/.venv/bin/activate && \
     ansible-galaxy collection install -r collections-requirements.yml --force && \
     ansible-galaxy role install -r roles-requirements.yml --force -p roles/
 
@@ -26,7 +34,7 @@ COPY . .
 ENV YAMLLINT_CONFIG_FILE=lint/.yamllint.yml
 
 CMD ["bash", "-c", "\
-  . .venv/bin/activate && \
+  . /opt/.venv/bin/activate && \
   yamllint . && \
   echo 'ci-lint-placeholder' > .vault_pass.txt && \
   ansible-lint && \
@@ -37,11 +45,11 @@ CMD ["bash", "-c", "\
   markdownlint-cli2 --config lint/.markdownlint-cli2.yaml && \
   markdown-table-formatter --check README.md CONTRIBUTING.md SECURITY.md docs/*.md && \
   linkbust README.md CONTRIBUTING.md SECURITY.md docs/CHANGELOG.md docs/*.md docs/decisions/*.md && \
-  codespell --config pyproject.toml \
+  codespell \
     inventory/ playbooks/ roles/common/ roles/dns/ roles/avahi/ roles/vault/ roles/proxy/ roles/verification/ \
     Makefile README.md CONTRIBUTING.md SECURITY.md docs/CHANGELOG.md pyproject.toml lint/ \
     ansible.cfg requirements-lint.txt requirements-rpm.txt .github/ && \
-  bandit -c pyproject.toml -r roles/common/ roles/dns/ roles/avahi/ roles/vault/ roles/proxy/ roles/verification/ playbooks/ && \
+  bandit -r roles/common/ roles/dns/ roles/avahi/ roles/vault/ roles/proxy/ roles/verification/ playbooks/ && \
   checkov --config-file lint/.checkov.yaml -d . && \
   detect-secrets scan --baseline lint/.secrets.baseline && \
   actionlint .github/workflows/*.yml && \
