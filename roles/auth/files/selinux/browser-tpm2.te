@@ -1,0 +1,17 @@
+policy_module(browser-tpm2, 1.1.0)
+
+# Allow staff_t and sysadm_t to access TPM2 character devices via
+# PKCS#11. Required for:
+#   - Firefox/Chrome TLS client cert auth using TPM2-bound P-384 keys
+#   - systemd-creds decrypt (age-encrypted root token via TPM2)
+#   - modutil PKCS#11 module registration (tpm2-pkcs11-so)
+
+require {
+    type staff_t;
+    type sysadm_t;
+    type tpm_device_t;
+    class chr_file { open read write ioctl };
+}
+
+allow staff_t tpm_device_t:chr_file { open read write ioctl };
+allow sysadm_t tpm_device_t:chr_file { open read write ioctl };

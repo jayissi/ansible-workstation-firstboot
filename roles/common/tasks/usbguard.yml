@@ -26,8 +26,19 @@
     - {regexp: "^AuditBackend=", line: "AuditBackend=LinuxAudit"}
   notify: Restart usbguard
 
+- name: Usbguard | Install usbguard-dbus (GNOME integration)
+  ansible.builtin.dnf:
+    name: usbguard-dbus
+    state: present
+
 - name: Usbguard | Enable and start USBGuard
   ansible.builtin.systemd:
     name: usbguard
+    state: started
+    enabled: true
+
+- name: Usbguard | Enable and start usbguard-dbus
+  ansible.builtin.systemd_service:
+    name: usbguard-dbus.service
     state: started
     enabled: true

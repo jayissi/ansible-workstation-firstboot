@@ -52,3 +52,9 @@
   tags:
     - common
     - system
+
+- name: Hardware-aware service tuning (mcelog removal, rasdaemon, ALSA)
+  ansible.builtin.include_tasks: hardware_tuning.yml
+  tags:
+    - common
+    - hardware

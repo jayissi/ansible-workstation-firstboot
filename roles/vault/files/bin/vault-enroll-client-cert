@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# vault-enroll-client-cert -- one-time TPM2 P-384 client cert enrollment
+#
+# Generates a P-384 key pair inside the TPM2, creates a PKCS#11 token,
+# generates a CSR, submits it to Vault for signing, and enrolls the
+# signed certificate into the browser NSS databases.
+#
+# Prerequisites:
+#   - tpm2-tools, tpm2-pkcs11, tpm2-pkcs11-tools, opensc, p11-kit
+#   - Vault cert auth method enabled with client-auth PKI role
+#   - VAULT_ADDR and VAULT_TOKEN environment variables set
+
+set -euo pipefail
+
+VAULT_ADDR="${VAULT_ADDR:-https://127.0.0.1:8200}"
+VAULT_CACERT="${VAULT_CACERT:-/etc/vault.d/certs/root.crt}"
+TPM2_HANDLE="${TPM2_HANDLE:-0x81000001}"
+CERT_DIR="/etc/vault.d/certs"
+ADMIN_USER="${ADMIN_USER:-$(logname 2>/dev/null || whoami)}"
+ADMIN_HOME="${ADMIN_HOME:-$(eval echo "~${ADMIN_USER}")}"
+
+log() { printf '[%s] %s\n' "$(date -Iseconds)" "$*"; }
+die() { log "ERROR: $*" >&2; exit 1; }
+
+# ---------------------------------------------------------------
+# Step 1: Runtime P-384 support check
+# ---------------------------------------------------------------
+log "Checking TPM2 ECC P-384 support..."
+if ! tpm2_getcap algorithms 2>/dev/null | grep -q ecc384; then
+    die "TPM2 does not support ECC P-384 (ecc384). Cannot proceed."
+fi
+log "TPM2 ECC P-384 support confirmed."
+
+# ---------------------------------------------------------------
+# Step 2: Create primary key (owner hierarchy)
+# ---------------------------------------------------------------
+log "Creating TPM2 primary key..."
+PRIMARY_CTX=$(mktemp /tmp/primary.ctx.XXXXXX)
+trap 'rm -f "${PRIMARY_CTX}" /tmp/tpm2_key.{ctx,pub,priv} 2>/dev/null' EXIT
+
+tpm2_createprimary \
+    -C o \
+    -g sha384 \
+    -G ecc384 \
+    -c "${PRIMARY_CTX}"
+
+# ---------------------------------------------------------------
+# Step 3: Create P-384 signing key under the primary
+# ---------------------------------------------------------------
+log "Creating P-384 signing key..."
+tpm2_create \
+    -C "${PRIMARY_CTX}" \
+    -G ecc384 \
+    -u /tmp/tpm2_key.pub \
+    -r /tmp/tpm2_key.priv \
+    -a 'fixedtpm|fixedparent|sensitivedataorigin|userwithauth|sign'
+
+# ---------------------------------------------------------------
+# Step 4: Load the key into the TPM
+# ---------------------------------------------------------------
+log "Loading key into TPM..."
+tpm2_load \
+    -C "${PRIMARY_CTX}" \
+    -u /tmp/tpm2_key.pub \
+    -r /tmp/tpm2_key.priv \
+    -c /tmp/tpm2_key.ctx
+
+# ---------------------------------------------------------------
+# Step 5: Make the key persistent
+# ---------------------------------------------------------------
+log "Making key persistent at handle ${TPM2_HANDLE}..."
+tpm2_evictcontrol \
+    -C o \
+    -c /tmp/tpm2_key.ctx \
+    "${TPM2_HANDLE}" 2>/dev/null || \
+    log "Handle ${TPM2_HANDLE} already occupied (re-enrollment)."
+
+# ---------------------------------------------------------------
+# Step 6: Register key with tpm2-pkcs11
+# ---------------------------------------------------------------
+log "Registering key with tpm2-pkcs11..."
+if ! tpm2_ptool listprimaries 2>/dev/null | grep -q "client-auth"; then
+    tpm2_ptool init --path="${ADMIN_HOME}/.tpm2_pkcs11" 2>/dev/null || true
+    tpm2_ptool addtoken \
+        --path="${ADMIN_HOME}/.tpm2_pkcs11" \
+        --label="client-auth" \
+        --sopin="sopin" --userpin="userpin" 2>/dev/null || true
+fi
+
+# ---------------------------------------------------------------
+# Step 7: Generate CSR via PKCS#11
+# ---------------------------------------------------------------
+log "Generating CSR via PKCS#11..."
+CSR_FILE=$(mktemp /tmp/client-cert.csr.XXXXXX)
+openssl req \
+    -new \
+    -engine pkcs11 \
+    -keyform engine \
+    -key "pkcs11:token=client-auth;type=private" \
+    -subj "/CN=${ADMIN_USER} - VaultPass/OU=Workstation Auth" \
+    -out "${CSR_FILE}" 2>/dev/null || \
+    die "CSR generation failed. Is the PKCS#11 module configured?"
+
+# ---------------------------------------------------------------
+# Step 8: Submit CSR to Vault for signing
+# ---------------------------------------------------------------
+log "Submitting CSR to Vault for signing..."
+if [ -z "${VAULT_TOKEN:-}" ]; then
+    die "VAULT_TOKEN is not set. Authenticate to Vault first."
+fi
+
+CSR_PEM=$(cat "${CSR_FILE}")
+SIGN_RESPONSE=$(curl -sk \
+    --cacert "${VAULT_CACERT}" \
+    -H "X-Vault-Token: ${VAULT_TOKEN}" \
+    -X POST \
+    -d "{\"csr\": \"${CSR_PEM}\", \"common_name\": \"${ADMIN_USER} - VaultPass\", \"ttl\": \"72h\"}" \
+    "${VAULT_ADDR}/v1/pki_int/sign/client-auth")
+
+SIGNED_CERT=$(echo "${SIGN_RESPONSE}" | python3 -c \
+    "import sys,json; d=json.load(sys.stdin); print(d['data']['certificate'])" 2>/dev/null) || \
+    die "Vault signing failed. Response: ${SIGN_RESPONSE}"
+
+CA_CHAIN=$(echo "${SIGN_RESPONSE}" | python3 -c \
+    "import sys,json; d=json.load(sys.stdin); print('\n'.join(d['data']['ca_chain']))" 2>/dev/null) || true
+
+rm -f "${CSR_FILE}"
+
+# ---------------------------------------------------------------
+# Step 9: Deploy signed certificate
+# ---------------------------------------------------------------
+log "Deploying signed certificate..."
+printf '%s\n%s\n' "${SIGNED_CERT}" "${CA_CHAIN}" > "${CERT_DIR}/client.crt"
+chmod 0444 "${CERT_DIR}/client.crt"
+
+# ---------------------------------------------------------------
+# Step 10: Enroll cert into browser NSS databases
+# ---------------------------------------------------------------
+log "Enrolling certificate into browser NSS databases..."
+
+# Chrome NSS DB
+CHROME_NSSDB="sql:${ADMIN_HOME}/.pki/nssdb"
+if [ -d "${ADMIN_HOME}/.pki/nssdb" ]; then
+    certutil -d "${CHROME_NSSDB}" -A \
+        -n "VaultPass Client Cert" \
+        -t ",," \
+        -i "${CERT_DIR}/client.crt" 2>/dev/null || \
+        log "WARN: Chrome NSS cert enrollment failed (non-fatal)."
+fi
+
+# Firefox NSS DB (find default profile)
+FF_PROFILE=$(find "${ADMIN_HOME}/.mozilla/firefox" -maxdepth 2 \
+    -name "cert9.db" -path "*.default*" 2>/dev/null | head -1 | xargs dirname 2>/dev/null || true)
+if [ -n "${FF_PROFILE}" ]; then
+    certutil -d "sql:${FF_PROFILE}" -A \
+        -n "VaultPass Client Cert" \
+        -t ",," \
+        -i "${CERT_DIR}/client.crt" 2>/dev/null || \
+        log "WARN: Firefox NSS cert enrollment failed (non-fatal)."
+fi
+
+log "Client certificate enrollment complete."
+log "Certificate: ${CERT_DIR}/client.crt"
+log "TPM2 handle: ${TPM2_HANDLE}"

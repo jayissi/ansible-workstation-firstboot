@@ -15,19 +15,21 @@ Phase 1: Bootstrap
   dns        -> Unbound (DNSSEC + DoT + blocklist), dnsconfd, DoH lockdown
   avahi      -> hardened mDNS/DNS-SD
   vault      -> install, bootstrap TLS, init, PKI, Agent, browser trust,
-                SSH secrets engine (OTP + Ed25519 CA break-glass)
+                SSH secrets engine (OTP + Ed25519 CA break-glass),
+                TLS client cert auth, OIDC Identity Provider, VaultPass
   proxy      -> Nginx reverse proxy (https://vault.local -> :8200),
                 SSH credential gateway (:8443, OTP + CA paths only)
 
 Phase 2: Harden (secrets from Vault)
-  Tier 0     -> crypto_policies, timesync, tuned, kernel_settings,
-                journald, bootloader, certificate, systemd
+  Tier 0     -> crypto_policies, timesync, tuned, hardware_tuning,
+                kernel_settings, journald, bootloader, certificate, systemd
   Tier 1     -> sshd, auditd, tlog
   Tier 2     -> firewall, selinux, auth
   Tier 3     -> sudo (sysadm_r), fapolicyd (LAST)
 
 Phase 3: Finalize
-  aide       -> init database LAST (captures hardened baseline)
+  aide       -> init database LAST (gated on database existence,
+                captures hardened baseline)
   verify     -> read-only assertions
 
 Phase 4: Reboot (conditional)
@@ -60,13 +62,14 @@ make verify                   # Post-deploy assertions
 
 ## PKI Configuration
 
-Default: **ECDSA P-256** (browser-compatible). Set
+Default: **ECDSA P-384 (CNSA 2.0)**, consistent across Root CA,
+Intermediate CA, and all leaf certificates. Set
 `vault_pki_key_type: ed25519` for Ed25519.
 
 ```yaml
 # inventory/group_vars/all/main.yml
-vault_pki_key_type: ec        # "ec" (ECDSA P-256) or "ed25519"
-vault_pki_key_bits: 256       # P-256 curve size
+vault_pki_key_type: ec        # "ec" (ECDSA P-384) or "ed25519"
+vault_pki_key_bits: 384       # P-384 curve size (CNSA 2.0)
 ```
 
 ## Vault Access
@@ -85,16 +88,27 @@ passphrase fallback, then plaintext (first-run only).
 
 - GRUB2 password-protected, `audit=1`, LUKS full-disk encryption
 - SSH: key-only, no root login, Ed25519, AllowUsers, banner,
-  Vault OTP + Ed25519 CA break-glass, credential gateway (:8443)
-- Auth: authselect sssd profile, faillock, pwquality, pwhistory,
-  vault-ssh-helper PAM integration
+  Vault OTP (verified end-to-end) + Ed25519 CA break-glass,
+  credential gateway (:8443)
+- Auth: TLS client cert primary (TPM2-bound P-384 via PKCS#11),
+  authselect sssd profile, faillock, pwquality, pwhistory,
+  vault-ssh-helper PAM integration, Vault OIDC Identity Provider
+- Browser: VaultPass extension + uBlock Origin (private mode)
 - DNS: DNSSEC + DoT (8 servers), ~76K blocklist, port 53 blocked,
   browser DoH bypass prevented
 - Firewall: zone target DROP, service-specific allow rules only
 - SELinux enforcing: `staff_u` admin, custom `vault_t` policy
 - fapolicyd: SHA-256 integrity, RPM + trusted binaries only
-- Vault CE: ECDSA P-256 TLS, auto-rotating certs, TPM2-bound secrets
-- AIDE: daily integrity checks, initialized after all hardening
+- Vault CE: ECDSA P-384 (CNSA 2.0) TLS, full-chain consistency
+  (Root CA → Intermediate CA → leaf), auto-rotating certs,
+  TPM2-bound secrets, split policies (vault-agent-tls + vault-agent-auth)
+- Self-healing: TPM2 auto-unseal survives vault.service restart,
+  Vault Agent secret_id re-provisioning on restart,
+  cert-rotation path-unit auto-reload
+- Hardware-aware tuning: rasdaemon on physical hosts (mcelog removed,
+  deprecated); VM guests skip hardware-specific tasks
+- AIDE: daily integrity checks, baseline init gated on database
+  existence (prevents silent resets), initialized after all hardening
 - Auditd: 50 CIS/NIST/STIG-aligned rules, immutable config (`-e 2`)
 
 See [SECURITY.md](SECURITY.md) for the full security model and

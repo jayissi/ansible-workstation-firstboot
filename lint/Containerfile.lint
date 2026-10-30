@@ -28,6 +28,7 @@ ENV YAMLLINT_CONFIG_FILE=lint/.yamllint.yml
 CMD ["bash", "-c", "\
   . .venv/bin/activate && \
   yamllint . && \
+  echo 'ci-lint-placeholder' > .vault_pass.txt && \
   ansible-lint && \
   ruff check . && \
   pyright && \
@@ -38,7 +39,7 @@ CMD ["bash", "-c", "\
   linkbust README.md CONTRIBUTING.md SECURITY.md docs/CHANGELOG.md docs/*.md docs/decisions/*.md && \
   codespell --config pyproject.toml \
     inventory/ playbooks/ roles/common/ roles/dns/ roles/avahi/ roles/vault/ roles/proxy/ roles/verification/ \
-    collections/ Makefile README.md CONTRIBUTING.md SECURITY.md docs/CHANGELOG.md pyproject.toml lint/ \
+    Makefile README.md CONTRIBUTING.md SECURITY.md docs/CHANGELOG.md pyproject.toml lint/ \
     ansible.cfg requirements-lint.txt requirements-rpm.txt .github/ && \
   bandit -c pyproject.toml -r roles/common/ roles/dns/ roles/avahi/ roles/vault/ roles/proxy/ roles/verification/ playbooks/ && \
   checkov --config-file lint/.checkov.yaml -d . && \

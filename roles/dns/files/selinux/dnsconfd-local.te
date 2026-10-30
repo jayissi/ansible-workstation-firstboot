@@ -1,4 +1,4 @@
-policy_module(dnsconfd-local, 1.0.0)
+policy_module(dnsconfd-local, 1.1.0)
 
 # Temporary upstream-bug workaround for dnsconfd-selinux package.
 # dnsconfd_t needs to read SSSD's public passwd cache and write to
@@ -10,9 +10,11 @@ require {
     type dnsconfd_t;
     type sssd_public_t;
     type sssd_var_lib_t;
+    type sssd_t;
     class file { read getattr open map };
     class dir { search getattr };
     class sock_file { write getattr };
+    class unix_stream_socket connectto;
 }
 
 # Allow dnsconfd to read SSSD's public passwd cache
@@ -22,3 +24,10 @@ allow dnsconfd_t sssd_public_t:dir { search getattr };
 # Allow dnsconfd to write to SSSD's NSS socket
 allow dnsconfd_t sssd_var_lib_t:sock_file { write getattr };
 allow dnsconfd_t sssd_var_lib_t:dir { search getattr };
+
+# Allow dnsconfd to complete the stream connection handshake to the
+# SSSD process itself (/var/lib/sss/pipes/nss). Writing to the
+# sock_file node alone is not sufficient for unix_stream_socket
+# connections -- the connecting domain also needs connectto on the
+# listening process's domain.
+allow dnsconfd_t sssd_t:unix_stream_socket connectto;

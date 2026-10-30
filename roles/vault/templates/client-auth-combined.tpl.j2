@@ -1,0 +1,7 @@
+{{ "{{" }}- with pkiCert "pki_int/issue/client-auth" "common_name={{ vault_pki_client_auth_cn }}" "ttl={{ vault_client_cert_ttl }}" -{{ "}}" }}
+-----BEGIN VAULT-AGENT-CLIENT-CERT-----
+{{ "{{" }} .Cert {{ "}}" }}
+{{ "{{" }} .CA {{ "}}" }}
+-----BEGIN VAULT-AGENT-CLIENT-KEY-----
+{{ "{{" }} .Key {{ "}}" }}
+{{ "{{" }}- end -{{ "}}" }}

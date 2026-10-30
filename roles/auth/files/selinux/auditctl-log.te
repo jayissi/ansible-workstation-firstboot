@@ -1,0 +1,20 @@
+policy_module(auditctl-log, 1.2.0)
+
+# Allow auditctl to read the audit log directory AND open+read the
+# audit.log file itself. When auditctl verifies that immutable audit
+# rules (CIS 4.1.17) are loaded, it opens and reads
+# /var/log/audit/audit.log to confirm the lock is active. SELinux
+# requires BOTH open and read on the file class -- open alone grants
+# a file descriptor, read is required to access content. The base
+# policy only allows auditctl_t to manage audit rules via the
+# kernel audit subsystem, not to access the log directory or file.
+
+require {
+    type auditctl_t;
+    type auditd_log_t;
+    class dir read;
+    class file { open read };
+}
+
+allow auditctl_t auditd_log_t:dir read;
+allow auditctl_t auditd_log_t:file { open read };

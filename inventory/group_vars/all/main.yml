@@ -26,6 +26,12 @@ common_packages:
   - python3-pylint
   - ShellCheck
   - nss-tools
+  - opensc
+  - p11-kit
+  - p11-kit-trust
+  - tpm2-tools
+  - tpm2-pkcs11
+  - tpm2-pkcs11-tools
   - usbguard
   - vim
   - vim-ansible
@@ -140,9 +146,9 @@ vault_tls_key_file: "{{ vault_cert_dir }}/server.key"
 vault_key_shares: 5
 vault_key_threshold: 3
 
-# PKI key type: "ec" (ECDSA P-256, browser-compatible) or "ed25519" (future)
+# PKI key type: "ec" (ECDSA P-384, CNSA 2.0 compliant) or "ed25519" (future)
 vault_pki_key_type: ec
-vault_pki_key_bits: 256
+vault_pki_key_bits: 384
 
 vault_pki_root_ttl: "87600h"
 vault_pki_intermediate_ttl: "8760h"
@@ -286,7 +292,6 @@ systemd_masked_units:
   - cups.service
   - cups.socket
   - cups.path
-  - mcelog.service
   - systemd-resolved.service
   - systemd-resolved-monitor.socket
   - systemd-resolved-varlink.socket
@@ -892,11 +897,17 @@ fapolicyd_add_trusted_paths:
   - /usr/bin/vault
   - /usr/bin/vault-ssh-helper
   - /usr/local/bin/vault-agent-split-proxy-cert
+  - /usr/local/bin/vault-enroll-client-cert
+  - /usr/local/bin/vault-agent-split-client-cert
 
 # ---------------------------------------------------------------------------
 # linux_system_roles.aide (Phase 3 -- MUST be LAST)
 # ---------------------------------------------------------------------------
-aide_init: true
+# aide_init is intentionally NOT set here -- it is computed dynamically
+# in playbooks/site.yml's Phase 3 pre_tasks (true only on first-ever
+# bootstrap, when no baseline database exists yet). Setting it
+# statically to true would silently reinitialize the integrity
+# baseline on every deploy, erasing any tamper-detection signal.
 aide_cron_check: true
 aide_cron_interval: "05 4 * * *"
 aide_db_fetch_dir: files

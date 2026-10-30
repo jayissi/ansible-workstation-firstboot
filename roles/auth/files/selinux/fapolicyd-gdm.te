@@ -1,0 +1,21 @@
+policy_module(fapolicyd-gdm, 1.1.0)
+
+# Allow fapolicyd to probe two distinct GDM-related sockets during
+# startup. Fapolicyd enumerates all open file descriptors for subject
+# fingerprinting and hits:
+#   1. A GDM unix socket (xdm_var_run_t, sock_file write)
+#   2. systemd-userdbd's GDM varlink socket at
+#      /run/systemd/userdb/org.gnome.DisplayManager (xdm_t domain,
+#      unix_stream_socket connectto)
+# Both are upstream known issues (fapolicyd probes all FDs it can see).
+
+require {
+    type fapolicyd_t;
+    type xdm_var_run_t;
+    type xdm_t;
+    class sock_file write;
+    class unix_stream_socket connectto;
+}
+
+allow fapolicyd_t xdm_var_run_t:sock_file write;
+allow fapolicyd_t xdm_t:unix_stream_socket connectto;

@@ -1,0 +1,351 @@
+---
+# roles/vault/tasks/cert_auth.yml
+# TLS client certificate auth method, OIDC provider, and PKCS#11 registration
+
+# ------------------------------------------------------------------
+# Check existing auth methods for idempotency (same pattern as pki_engine.yml)
+# ------------------------------------------------------------------
+- name: Cert Auth | Get current Vault auth methods
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/auth"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    validate_certs: false
+    status_code:
+      - 200
+  register: vault_auth_methods_cert
+
+# ------------------------------------------------------------------
+# Enable Vault cert auth method
+# ------------------------------------------------------------------
+- name: Cert Auth | Enable cert auth method
+  when: "'cert/' not in vault_auth_methods_cert.json"
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/auth/cert"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      type: cert
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+
+# ------------------------------------------------------------------
+# Fetch the Intermediate CA cert for the trusted CA configuration
+# ------------------------------------------------------------------
+- name: Cert Auth | Read Intermediate CA certificate
+  ansible.builtin.slurp:
+    src: "{{ vault_cert_dir }}/root.crt"
+  register: _vault_int_ca_cert
+
+# ------------------------------------------------------------------
+# Configure trusted CA certificate for client cert auth
+# ------------------------------------------------------------------
+- name: Cert Auth | Configure workstation-client trusted CA
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/auth/cert/certs/workstation-client"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      display_name: "workstation-client"
+      certificate: "{{ _vault_int_ca_cert.content | b64decode }}"
+      allowed_common_names:
+        - "{{ vault_pki_client_auth_cn }}"
+      token_policies:
+        - "{{ vault_vaultpass_policy_name }}"
+      token_ttl: "{{ vault_client_cert_ttl }}"
+      token_max_ttl: "{{ vault_client_cert_max_ttl }}"
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+
+# ------------------------------------------------------------------
+# OIDC Identity Provider setup
+# ------------------------------------------------------------------
+- name: Cert Auth | Configure OIDC provider
+  when: vault_oidc_provider_enabled | bool
+  block:
+    - name: Cert Auth | Create OIDC signing key
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/identity/oidc/key/vaultpass-key"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ _vault_token }}"
+        body_format: json
+        # rotation_period: how often the signing key rotates (shorter =
+        # smaller window if key material is extracted from Vault memory).
+        # verification_ttl: how long OLD keys remain valid for verifying
+        # already-issued tokens after rotation (must be >= id_token_ttl).
+        body:
+          rotation_period: "6h"
+          verification_ttl: "24h"
+          allowed_client_ids:
+            - "*"
+          algorithm: "ES384"
+        validate_certs: false
+        status_code:
+          - 200
+          - 204
+
+    - name: Cert Auth | Create OIDC assignment (allow all entities)
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/identity/oidc/assignment/allow-all"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ _vault_token }}"
+        body_format: json
+        body:
+          entity_ids:
+            - "*"
+        validate_certs: false
+        status_code:
+          - 200
+          - 204
+
+    - name: Cert Auth | Create OIDC client (vaultpass)
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/identity/oidc/client/vaultpass"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ _vault_token }}"
+        body_format: json
+        body:
+          redirect_uris:
+            - "https://{{ vault_local_hostname }}/oidc/callback"
+          assignments:
+            - "allow-all"
+          key: "vaultpass-key"
+          id_token_ttl: "{{ vault_vaultpass_token_ttl }}"
+          access_token_ttl: "{{ vault_vaultpass_token_max_ttl }}"
+        validate_certs: false
+        status_code:
+          - 200
+          - 204
+
+    # Read back the auto-generated client_id so we can scope the
+    # signing key and provider to ONLY this client. Without this,
+    # allowed_client_ids: ["*"] would allow any future rogue client
+    # to use the key/provider.
+    - name: Cert Auth | Read OIDC client_id for scope restriction
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/identity/oidc/client/vaultpass"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _vault_token }}"
+        validate_certs: false
+        status_code:
+          - 200
+      register: _vault_oidc_client
+
+    # Now scope the signing key to ONLY the vaultpass client
+    - name: Cert Auth | Scope OIDC signing key to vaultpass client only
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/identity/oidc/key/vaultpass-key"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ _vault_token }}"
+        body_format: json
+        body:
+          allowed_client_ids:
+            - "{{ _vault_oidc_client.json.data.client_id }}"
+        validate_certs: false
+        status_code:
+          - 200
+          - 204
+
+    - name: Cert Auth | Create OIDC provider (default)
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/identity/oidc/provider/default"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ _vault_token }}"
+        body_format: json
+        body:
+          # Explicit issuer makes the JWT 'iss' claim deterministic and
+          # human-readable, independent of Vault's api_addr setting.
+          # Vault auto-appends /v1/identity/oidc/provider/<name> to the
+          # issuer. Only provide scheme://host:port here.
+          issuer: "{{ vault_addr }}"
+          # Scoped to the vaultpass client only. Future OIDC clients
+          # MUST be added here explicitly (never use "*").
+          allowed_client_ids:
+            - "{{ _vault_oidc_client.json.data.client_id }}"
+          # "openid" is the only scope needed -- it is implicit in Vault's
+          # OIDC provider so we omit scopes_supported entirely. VaultPass
+          # needs only an access token for KV reads; no custom claims required.
+        validate_certs: false
+        status_code:
+          - 200
+          - 204
+
+# ------------------------------------------------------------------
+# Deploy client cert scripts
+# ------------------------------------------------------------------
+- name: Cert Auth | Deploy TPM2 client cert enrollment script
+  ansible.builtin.copy:
+    src: bin/vault-enroll-client-cert
+    dest: /usr/local/bin/vault-enroll-client-cert
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Cert Auth | Deploy client cert split script
+  ansible.builtin.copy:
+    src: bin/vault-agent-split-client-cert
+    dest: /usr/local/bin/vault-agent-split-client-cert
+    owner: root
+    group: root
+    mode: "0755"
+
+# ------------------------------------------------------------------
+# Vault Agent templates for client cert + break-glass SSH
+# ------------------------------------------------------------------
+- name: Cert Auth | Deploy client cert Vault Agent template
+  ansible.builtin.template:
+    src: client-auth-combined.tpl.j2
+    dest: "{{ vault_config_dir }}/templates/client-auth-combined.tpl"
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: "0640"
+  notify: Restart vault-agent
+
+- name: Cert Auth | Deploy break-glass SSH cert Vault Agent template
+  when: vault_ssh_enabled | default(false) | bool
+  ansible.builtin.template:
+    src: breakglass-ssh-cert.tpl.j2
+    dest: "{{ vault_config_dir }}/templates/breakglass-ssh-cert.tpl"
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: "0640"
+  notify: Restart vault-agent
+
+# Vault Agent (running as the unprivileged "vault" service account)
+# cannot read the admin's public key directly from ~/.ssh/ -- that
+# directory is 0700 (owner-only), by design, and vault is not a
+# member of the admin's group. Confirmed via runtime testing: the
+# template's hardcoded "file ~/.ssh/id_ed25519.pub" read caused Vault
+# Agent to crash-loop every ~4 minutes with "permission denied"
+# (continuous since boot), and the break-glass cert was never
+# rendered. The admin's trusted public key is also not guaranteed to
+# be named "id_ed25519.pub" -- it may differ per environment (as it
+# does here, where the admin's actual working key is project-specific
+# and never materializes as a personal ~/.ssh/id_ed25519 keypair).
+#
+# Fix: extract the exact public key already trusted for this admin's
+# login (authorized_keys) via Ansible's own elevated read access, and
+# republish ONLY that public key string to a location vault can read
+# (vault:vault owned, 0440). This reuses the admin's real day-to-day
+# key for break-glass (same UX intent as the original design) without
+# weakening ~/.ssh permissions or assuming a specific key filename.
+- name: Cert Auth | Read admin's trusted public key from authorized_keys
+  when: vault_ssh_enabled | default(false) | bool
+  ansible.builtin.slurp:
+    src: "{{ common_admin_home }}/.ssh/authorized_keys"
+  register: _vault_admin_authorized_keys
+
+- name: Cert Auth | Deploy admin public key to vault-readable location
+  when: vault_ssh_enabled | default(false) | bool
+  ansible.builtin.copy:
+    content: >-
+      {{ (_vault_admin_authorized_keys.content | b64decode).splitlines()
+         | select('match', '^ssh-ed25519 ')
+         | first }}
+    dest: "{{ vault_cert_dir }}/breakglass-admin-pubkey.pub"
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: "0440"
+  notify: Restart vault-agent
+
+# ------------------------------------------------------------------
+# Chrome PKCS#11 module registration
+# ------------------------------------------------------------------
+- name: Cert Auth | Ensure Chrome NSS database directory exists
+  ansible.builtin.file:
+    path: "{{ common_admin_home }}/.pki/nssdb"
+    state: directory
+    owner: "{{ common_admin_user }}"
+    group: "{{ common_admin_user }}"
+    mode: "0700"
+
+- name: Cert Auth | Check if TPM2 PKCS#11 module is registered in Chrome NSS
+  ansible.builtin.command:
+    cmd: >-
+      modutil -dbdir sql:{{ common_admin_home }}/.pki/nssdb
+      -list 'TPM2 PKCS#11'
+  register: _vault_chrome_pkcs11_check
+  changed_when: false
+  failed_when: false
+
+  # modutil may fail if the TPM2 PKCS#11 store is not yet initialized
+  # (requires tpm2_ptool init, which happens during vault-enroll-client-cert).
+  # Non-fatal: the module will be registered when enrollment runs.
+  # changed_when is tied to actual success (rc == 0), not blindly
+  # true -- confirmed via runtime testing: before this fix, this task
+  # reported "changed" on every single deploy even though the
+  # underlying "modutil -add" call was failing every time (rc=29,
+  # "Could not find or create a pkcs11 store" -- the store doesn't
+  # exist yet pre-enrollment), so nothing was actually being
+  # registered or changed.
+- name: Cert Auth | Register TPM2 PKCS#11 module in Chrome NSS database
+  when: _vault_chrome_pkcs11_check.rc != 0
+  ansible.builtin.command:
+    cmd: >-
+      modutil -dbdir sql:{{ common_admin_home }}/.pki/nssdb
+      -add 'TPM2 PKCS#11'
+      -libfile /usr/lib64/pkcs11/libtpm2_pkcs11.so
+      -force
+  register: _vault_chrome_pkcs11_register
+  changed_when: _vault_chrome_pkcs11_register.rc == 0
+  failed_when: false
+
+# ------------------------------------------------------------------
+# Firefox PKCS#11 module registration (modutil avoids policies.json conflict)
+# ------------------------------------------------------------------
+- name: Cert Auth | Find Firefox default profile path
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      find {{ common_admin_home }}/.mozilla/firefox -maxdepth 2
+      -name "cert9.db" -path "*.default*" 2>/dev/null
+      | head -1 | xargs dirname 2>/dev/null
+  register: _vault_firefox_profile_path
+  changed_when: false
+  failed_when: false
+
+- name: Cert Auth | Check if TPM2 PKCS#11 module is registered in Firefox NSS
+  when: (_vault_firefox_profile_path.stdout | default('')) | trim | length > 0
+  ansible.builtin.command:
+    cmd: >-
+      modutil -dbdir sql:{{ _vault_firefox_profile_path.stdout | trim }}
+      -list 'TPM2 PKCS#11'
+  register: _vault_firefox_pkcs11_check
+  changed_when: false
+  failed_when: false
+
+  # Same as Chrome: may fail if TPM2 PKCS#11 store is not yet initialized.
+- name: Cert Auth | Register TPM2 PKCS#11 module in Firefox NSS database
+  when:
+    - (_vault_firefox_profile_path.stdout | default('')) | trim | length > 0
+    - _vault_firefox_pkcs11_check.rc | default(1) != 0
+  ansible.builtin.command:
+    cmd: >-
+      modutil -dbdir sql:{{ _vault_firefox_profile_path.stdout | trim }}
+      -add 'TPM2 PKCS#11'
+      -libfile /usr/lib64/pkcs11/libtpm2_pkcs11.so
+      -force
+  changed_when: true
+  failed_when: false
+
+- name: Cert Auth | Report Firefox PKCS#11 status
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'TPM2 PKCS#11 module registered in Firefox NSS database.'
+         if (_vault_firefox_profile_path.stdout | default('')) | trim | length > 0
+         else 'INFO: Firefox profile not found. Run Firefox once, then re-run to register PKCS#11.' }}

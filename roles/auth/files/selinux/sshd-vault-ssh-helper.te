@@ -1,17 +1,44 @@
-policy_module(sshd-vault-ssh-helper, 1.0.0)
+policy_module(sshd-vault-ssh-helper, 1.2.0)
 
 # Option A (client-approved for now; Option B dedicated domain
 # transition is the long-term plan, see docs/KNOWN_ISSUES.md backlog).
-# vault-ssh-helper runs as sshd_t (invoked via pam_exec during sshd's
-# auth phase, before pam_selinux.so open transitions to the user
-# context). It needs to reach Vault's API on port 8200 to validate
-# OTPs. Extend the existing vault_cluster_port_t label (currently only
-# covers 8201) to also cover 8200 -- see roles/vault/handlers/main.yml.
-
+# vault-ssh-helper runs during sshd's auth phase, before pam_selinux.so
+# open transitions to the user context. It needs to reach Vault's API
+# on port 8200 to validate OTPs, and pam_exec's log= option needs to
+# append to its own log file.
+#
+# Both sshd_t AND sshd_session_t are covered. Fedora 44 ships OpenSSH
+# 10.2p1, which re-architected privilege separation: the listener
+# process (sshd_t) forks a per-connection "sshd-session" process that
+# runs the actual PAM auth stack in a DISTINCT domain, sshd_session_t.
+# Confirmed via runtime testing (first real end-to-end OTP login
+# attempt in this project's history): the original sshd_t-only rule
+# here had never actually been exercised by a live OTP flow. The AVC
+# that surfaced was explicitly scontext=...:sshd_session_t, not
+# sshd_t -- comm="sshd-session" tclass=file on the log file (append),
+# confirming sshd_session_t is the domain that actually runs
+# pam_exec/vault-ssh-helper on this OpenSSH version.
+#
+# "open" AND "append" are BOTH required on the file class -- "append"
+# alone is not sufficient. Confirmed via runtime testing: after adding
+# "append" only, the OTP login still failed identically. The "open"
+# denial was invisible in normal audit output -- the base policy has
+# a dontaudit rule for this exact (sshd_session_t, var_log_t, open)
+# pattern. Only visible after `semodule -DB` (disable dontaudit)
+# forced full AVC logging; the attempt succeeded once sshd_session_t
+# was set permissive, proving a hidden denial existed even though
+# `ausearch -m avc` showed nothing. Same open+access-permission
+# nuance already seen this session for auditctl's file-class access
+# to auditd_log_t (see auditctl-log.te).
 require {
     type sshd_t;
+    type sshd_session_t;
     type vault_cluster_port_t;
+    type var_log_t;
     class tcp_socket name_connect;
+    class file { open append };
 }
 
 allow sshd_t vault_cluster_port_t:tcp_socket name_connect;
+allow sshd_session_t vault_cluster_port_t:tcp_socket name_connect;
+allow sshd_session_t var_log_t:file { open append };

@@ -29,6 +29,11 @@
     name: vault-agent
     state: restarted
 
+- name: Restart polkit
+  ansible.builtin.systemd_service:
+    name: polkit.service
+    state: restarted
+
 - name: Update ca trust
   ansible.builtin.command:
     cmd: update-ca-trust

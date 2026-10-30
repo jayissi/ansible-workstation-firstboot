@@ -1,0 +1,1 @@
+# No file contexts needed — uses existing xdm_var_run_t/systemd_machined_t labels

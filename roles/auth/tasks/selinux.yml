@@ -26,6 +26,24 @@
     - sshd-vault-ssh-helper.te
     - sshd-vault-ssh-helper.if
     - sshd-vault-ssh-helper.fc
+    - browser-tpm2.te
+    - browser-tpm2.if
+    - browser-tpm2.fc
+    - fapolicyd-gdm.te
+    - fapolicyd-gdm.if
+    - fapolicyd-gdm.fc
+    - aide-efi.te
+    - aide-efi.if
+    - aide-efi.fc
+    - auditctl-log.te
+    - auditctl-log.if
+    - auditctl-log.fc
+    - logind-usbguard.te
+    - logind-usbguard.if
+    - logind-usbguard.fc
+    - usbguard-gdm.te
+    - usbguard-gdm.if
+    - usbguard-gdm.fc
   notify: Compile and install auth SELinux policies
 
 - name: Selinux | Check if auth SELinux modules are loaded
@@ -33,5 +51,11 @@
     cmd: semodule -l
   register: __auth_selinux_modules
   changed_when: >-
-    'sshd-vault-ssh-helper' not in __auth_selinux_modules.stdout
+    'sshd-vault-ssh-helper' not in __auth_selinux_modules.stdout or
+    'browser-tpm2' not in __auth_selinux_modules.stdout or
+    'fapolicyd-gdm' not in __auth_selinux_modules.stdout or
+    'aide-efi' not in __auth_selinux_modules.stdout or
+    'auditctl-log' not in __auth_selinux_modules.stdout or
+    'logind-usbguard' not in __auth_selinux_modules.stdout or
+    'usbguard-gdm' not in __auth_selinux_modules.stdout
   notify: Compile and install auth SELinux policies

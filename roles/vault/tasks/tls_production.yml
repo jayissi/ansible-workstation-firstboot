@@ -50,13 +50,13 @@
 
 - name: Tls Production | Request leaf certificate from Vault PKI
   ansible.builtin.uri:
-    url: "{{ vault_addr }}/v1/pki_int/issue/workstation-leaf"
+    url: "{{ vault_addr }}/v1/pki_int/issue/vault-server"
     method: POST
     headers:
       X-Vault-Token: "{{ _vault_token }}"
     body_format: json
     body:
-      common_name: "{{ ansible_facts.fqdn }}"
+      common_name: "{{ vault_pki_vault_server_cn }}"
       alt_names: "localhost,{{ vault_local_hostname }},{{ ansible_hostname }}"
       ip_sans: "127.0.0.1"
       ttl: "{{ vault_pki_leaf_ttl }}"

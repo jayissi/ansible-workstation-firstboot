@@ -26,13 +26,13 @@
 
 - name: Configure | Issue initial proxy leaf cert from Vault PKI
   ansible.builtin.uri:
-    url: "{{ proxy_vault_addr }}/v1/pki_int/issue/workstation-leaf"
+    url: "{{ proxy_vault_addr }}/v1/pki_int/issue/nginx-gateway"
     method: POST
     headers:
       X-Vault-Token: "{{ proxy_vault_token }}"
     body_format: json
     body:
-      common_name: "{{ proxy_server_name }}"
+      common_name: "{{ vault_pki_nginx_cn }}"
       alt_names: "{{ proxy_server_name }}"
       ttl: "{{ proxy_leaf_ttl | default('2160h') }}"
     validate_certs: false

@@ -104,6 +104,15 @@
       common_name: "{{ vault_pki_organization }} Root CA"
       issuer_name: "root-ca"
       key_type: "{{ vault_pki_key_type }}"
+      # key_bits was missing here. Confirmed via runtime testing: without
+      # it, Vault's generate/internal silently falls back to its own EC
+      # default (P-256), NOT vault_pki_key_bits -- the Root CA was issued
+      # at P-256 even with vault_pki_key_bits: 384 set, while the leaf-
+      # issuing PKI roles below (which DO set key_bits) correctly got
+      # P-384. Chain strength is bounded by its weakest link, so this
+      # silently undermined the entire P-384/CNSA 2.0 upgrade at the
+      # trust-anchor level.
+      key_bits: "{{ vault_pki_key_bits }}"
       organization: "{{ vault_pki_organization }}"
       ou: "{{ vault_pki_ou }}"
       locality: "{{ vault_pki_locality }}"
@@ -146,6 +155,10 @@
       common_name: "{{ vault_pki_organization }} Intermediate CA"
       issuer_name: "intermediate-ca"
       key_type: "{{ vault_pki_key_type }}"
+      # Same missing-key_bits bug as the Root CA above -- see comment
+      # there. Confirmed via runtime testing: this CSR was also
+      # generated at P-256 despite vault_pki_key_bits: 384.
+      key_bits: "{{ vault_pki_key_bits }}"
       organization: "{{ vault_pki_organization }}"
       ou: "{{ vault_pki_ou }}"
       locality: "{{ vault_pki_locality }}"
@@ -189,32 +202,108 @@
       - 204
   when: "'pki_int/' not in vault_mounts.json"
 
-- name: Pki Engine | Create PKI role for leaf certificates
+- name: Pki Engine | Create PKI role for Vault server certificates
   ansible.builtin.uri:
-    url: "{{ vault_addr }}/v1/pki_int/roles/workstation-leaf"
+    url: "{{ vault_addr }}/v1/pki_int/roles/vault-server"
     method: POST
     headers:
       X-Vault-Token: "{{ _vault_token }}"
     body_format: json
+    # CN is a descriptive identifier ("HashiCorp Vault"), not a hostname.
+    # allow_any_name + enforce_hostnames=false let Vault accept it.
+    # Actual hostname validation happens via SANs in the cert request
+    # (alt_names: localhost, vault.local, ...), not the CN field --
+    # modern TLS (RFC 6125) uses SANs exclusively for hostname matching.
     body:
       allowed_domains:
         - localhost
         - "{{ vault_local_hostname }}"
         - "{{ ansible_hostname }}"
         - "{{ ansible_facts.fqdn }}"
+      allow_any_name: true
+      enforce_hostnames: false
       allow_subdomains: true
       allow_bare_domains: true
       allow_localhost: true
       key_type: "{{ vault_pki_key_type }}"
       key_bits: "{{ vault_pki_key_bits }}"
       organization: "{{ vault_pki_organization }}"
-      ou: "{{ vault_pki_ou }}"
+      ou: "{{ vault_pki_vault_server_ou }}"
       locality: "{{ vault_pki_locality }}"
       province: "{{ vault_pki_province }}"
       country: "{{ vault_pki_country }}"
       max_ttl: "{{ vault_pki_leaf_max_ttl }}"
       ttl: "{{ vault_pki_leaf_ttl }}"
       require_cn: false
+      server_flag: true
+      client_flag: false
+      generate_lease: true
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+
+- name: Pki Engine | Create PKI role for Nginx gateway certificates
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/pki_int/roles/nginx-gateway"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    # CN is "Nginx Gateway" (descriptive, not a hostname). Same rationale
+    # as vault-server role above: allow_any_name + enforce_hostnames=false.
+    body:
+      allowed_domains:
+        - "{{ vault_local_hostname }}"
+      allow_any_name: true
+      enforce_hostnames: false
+      allow_subdomains: true
+      allow_bare_domains: true
+      allow_localhost: true
+      key_type: "{{ vault_pki_key_type }}"
+      key_bits: "{{ vault_pki_key_bits }}"
+      organization: "{{ vault_pki_organization }}"
+      ou: "{{ vault_pki_nginx_ou }}"
+      locality: "{{ vault_pki_locality }}"
+      province: "{{ vault_pki_province }}"
+      country: "{{ vault_pki_country }}"
+      max_ttl: "{{ vault_pki_leaf_max_ttl }}"
+      ttl: "{{ vault_pki_leaf_ttl }}"
+      require_cn: false
+      server_flag: true
+      client_flag: false
+      generate_lease: true
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+
+- name: Pki Engine | Create PKI role for client auth certificates
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/pki_int/roles/client-auth"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      allow_any_name: true
+      enforce_hostnames: false
+      key_type: "{{ vault_pki_key_type }}"
+      key_bits: "{{ vault_pki_key_bits }}"
+      organization: "{{ vault_pki_organization }}"
+      ou: "{{ vault_pki_client_auth_ou }}"
+      locality: "{{ vault_pki_locality }}"
+      province: "{{ vault_pki_province }}"
+      country: "{{ vault_pki_country }}"
+      key_usage:
+        - DigitalSignature
+      ext_key_usage:
+        - ClientAuth
+      server_flag: false
+      client_flag: true
+      ttl: "72h"
+      max_ttl: "168h"
+      require_cn: true
       generate_lease: true
     validate_certs: false
     status_code:
@@ -258,16 +347,39 @@
 - name: Pki Engine | Configure AppRole auth
   when: "'approle/' not in vault_auth_methods.json"
   block:
-    - name: Pki Engine | Create Vault Agent policy (cert renewal only)
+    - name: Pki Engine | Create vault-agent-tls policy (server cert rotation)
       ansible.builtin.uri:
-        url: "{{ vault_addr }}/v1/sys/policies/acl/vault-agent-cert"
+        url: "{{ vault_addr }}/v1/sys/policies/acl/vault-agent-tls"
         method: PUT
         headers:
           X-Vault-Token: "{{ _vault_token }}"
         body_format: json
         body:
           policy: |
-            path "pki_int/issue/workstation-leaf" {
+            path "pki_int/issue/vault-server" {
+              capabilities = ["create", "update"]
+            }
+            path "pki_int/issue/nginx-gateway" {
+              capabilities = ["create", "update"]
+            }
+        validate_certs: false
+        status_code:
+          - 200
+          - 204
+
+    - name: Pki Engine | Create vault-agent-auth policy (identity-bearing certs)
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/sys/policies/acl/vault-agent-auth"
+        method: PUT
+        headers:
+          X-Vault-Token: "{{ _vault_token }}"
+        body_format: json
+        body:
+          policy: |
+            path "pki_int/issue/client-auth" {
+              capabilities = ["create", "update"]
+            }
+            path "ssh-ca/sign/breakglass" {
               capabilities = ["create", "update"]
             }
         validate_certs: false
@@ -297,7 +409,7 @@
           X-Vault-Token: "{{ _vault_token }}"
         body_format: json
         body:
-          token_policies: ["vault-agent-cert"]
+          token_policies: ["vault-agent-tls", "vault-agent-auth"]
           token_ttl: "1h"
           token_max_ttl: "4h"
           secret_id_ttl: "0"
@@ -432,7 +544,8 @@
         path "pki_int/certs" { capabilities = ["list"] }
         path "pki_int/certs/*" { capabilities = ["read","list"] }
         path "pki_int/cert/*" { capabilities = ["read"] }
-        path "pki_int/issue/workstation-leaf" { capabilities = ["create","update"] }
+        path "pki_int/issue/vault-server" { capabilities = ["create","update"] }
+        path "pki_int/issue/nginx-gateway" { capabilities = ["create","update"] }
         path "ssh-otp/creds/daily" { capabilities = ["create","update"] }
         path "ssh-ca/sign/breakglass" { capabilities = ["create","update"] }
         path "auth/approle/role/vault-agent/secret-id" { capabilities = ["create","update"] }

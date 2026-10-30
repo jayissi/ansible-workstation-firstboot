@@ -21,6 +21,7 @@ rules:
 ignore:
   - .venv/
   - .github/
+  - collections/
   - docs/
   - inventory/group_vars/all/vault.yml
   - roles/vault/files/selinux/

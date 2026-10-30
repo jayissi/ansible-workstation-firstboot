@@ -336,6 +336,32 @@
 
   post_tasks:
     # -----------------------------------------------------------------
+    # Fapolicyd cache tuning (must run AFTER linux-system-roles.fapolicyd
+    # which overwrites fapolicyd.conf from its own template).
+    # Default 1549/8191 causes subject/object cache thrashing during
+    # heavy workloads (e.g., Ansible deploy with many ldconfig calls).
+    # -----------------------------------------------------------------
+    - name: Tune fapolicyd subject cache size
+      ansible.builtin.lineinfile:
+        path: /etc/fapolicyd/fapolicyd.conf
+        regexp: '^subj_cache_size\s*='
+        line: "subj_cache_size = 4096"
+      notify: Restart fapolicyd
+      tags:
+        - fapolicyd
+        - harden
+
+    - name: Tune fapolicyd object cache size
+      ansible.builtin.lineinfile:
+        path: /etc/fapolicyd/fapolicyd.conf
+        regexp: '^obj_cache_size\s*='
+        line: "obj_cache_size = 16384"
+      notify: Restart fapolicyd
+      tags:
+        - fapolicyd
+        - harden
+
+    # -----------------------------------------------------------------
     # CIS 4.1.15 -- Privilege escalation audit rules
     # Cross-field comparison (-C euid!=uid) requires the -C flag which
     # fedora.linux_system_roles.auditd does not support via its field
@@ -412,6 +438,11 @@
         - harden
 
   handlers:
+    - name: Restart fapolicyd
+      ansible.builtin.systemd_service:
+        name: fapolicyd.service
+        state: restarted
+
     - name: Load updated audit rules
       ansible.builtin.command:
         cmd: augenrules --load
@@ -423,6 +454,32 @@
 - name: "Phase 3: Finalize -- AIDE baseline and verification"
   hosts: workstation
   become: true
+  pre_tasks:
+    # aide_init: true is only safe to run ONCE (first-ever bootstrap).
+    # Running "aide --init" unconditionally on every deploy silently
+    # overwrites the integrity baseline with whatever the filesystem
+    # looks like at that moment -- including any unauthorized
+    # tampering that occurred between deploys. This defeats AIDE's
+    # entire purpose (confirmed via runtime testing: aide.db.gz's
+    # mtime updated on every single idempotent re-run with no actual
+    # drift). Periodic drift detection is handled independently by
+    # the aide_cron_check cron job (04:05 daily, aide --check),
+    # which runs outside of Ansible deploys and is unaffected by
+    # this gate.
+    - name: Check if AIDE baseline database already exists
+      ansible.builtin.stat:
+        path: /var/lib/aide/aide.db.gz
+      register: _aide_db_stat
+      tags:
+        - aide
+        - finalize
+
+    - name: Gate aide_init to first-ever bootstrap only
+      ansible.builtin.set_fact:
+        aide_init: "{{ not _aide_db_stat.stat.exists }}"
+      tags:
+        - aide
+        - finalize
   roles:
     - role: linux-system-roles.aide
       tags:

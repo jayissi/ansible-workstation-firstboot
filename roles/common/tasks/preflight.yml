@@ -82,3 +82,27 @@
          if common_tpm2_roundtrip.rc | default(1) == 0
          else 'INFO: TPM2 round-trip skipped (SELinux sysadm_t may block direct access.'
               ~ ' This is normal after hardening -- vault-unseal.service uses init_t context).' }}
+
+# Secure Boot verification
+- name: Preflight | Check Secure Boot state
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      mokutil --sb-state 2>/dev/null
+      || (cat /sys/firmware/efi/efivars/SecureBoot-* 2>/dev/null | xxd | tail -1)
+  register: common_secure_boot_check
+  changed_when: false
+  failed_when: false
+
+- name: Preflight | Set Secure Boot fact
+  ansible.builtin.set_fact:
+    _common_secure_boot_enabled: >-
+      {{ (common_secure_boot_check.stdout | default('')) is search('SecureBoot enabled') }}
+
+- name: Preflight | Report Secure Boot status
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'PASS: Secure Boot is enabled.'
+         if _common_secure_boot_enabled | bool
+         else 'WARN: Secure Boot is not enabled. TPM2 PCR-bound unseal will be skipped'
+              ~ ' (PCR values are meaningless without a trusted boot chain).' }}

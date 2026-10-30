@@ -23,13 +23,19 @@
     - auth_vault_ssh_helper_enabled | bool
     - not __auth_vsh_binary.stat.exists
 
+# validate_certs: false because releases.hashicorp.com serves an RSA
+# 2048-bit leaf cert, which the FUTURE crypto policy rejects as "EE
+# certificate key too weak". Integrity is guaranteed by the pinned
+# SHA-256 checksum below (stronger than TLS cert validation alone).
 - name: Install | Download vault-ssh-helper release archive
+  # checkov:skip=CKV_ANSIBLE_2:compensated by pinned SHA-256 checksum, see comment above
   ansible.builtin.get_url:
     url: >-
       https://releases.hashicorp.com/vault-ssh-helper/{{ auth_vault_ssh_helper_version }}/vault-ssh-helper_{{ auth_vault_ssh_helper_version }}_linux_amd64.zip
     checksum: "sha256:{{ auth_vault_ssh_helper_checksum }}"
     dest: "/tmp/vault-ssh-helper_{{ auth_vault_ssh_helper_version }}_linux_amd64.zip"
     mode: "0644"
+    validate_certs: false
   when:
     - auth_vault_ssh_helper_enabled | bool
     - not __auth_vsh_binary.stat.exists

@@ -3,3 +3,13 @@
   ansible.builtin.systemd:
     name: usbguard
     state: restarted
+
+- name: Restart polkit
+  ansible.builtin.systemd_service:
+    name: polkit.service
+    state: restarted
+
+- name: Restart fapolicyd
+  ansible.builtin.systemd_service:
+    name: fapolicyd.service
+    state: restarted

@@ -1,0 +1,13 @@
+policy_module(aide-efi, 1.0.0)
+
+# Allow AIDE to stat the EFI System Partition (/boot/efi). The ESP
+# uses a FAT filesystem (dosfs_t) which aide_t is not granted getattr
+# access to by default. AIDE needs this to verify boot integrity.
+
+require {
+    type aide_t;
+    type dosfs_t;
+    class filesystem getattr;
+}
+
+allow aide_t dosfs_t:filesystem getattr;

@@ -1,0 +1,70 @@
+---
+# roles/common/tasks/hardware_tuning.yml
+# Hardware-aware service tuning: detects absent hardware and adjusts
+# services accordingly. Applies to both VMs and bare-metal systems
+# that lack specific peripherals.
+
+# ---------------------------------------------------------------
+# mcelog removal (deprecated everywhere -- replaced by rasdaemon)
+# ---------------------------------------------------------------
+# mcelog is unmaintained (last release 2020), x86-only, relies on the
+# removed /dev/mcelog interface. Fedora ships it masked since F36.
+# Leaving deprecated packages on disk is a security liability (no CVE
+# patches, confusing audit findings). Remove unconditionally.
+- name: Hardware Tuning | Remove deprecated mcelog package
+  ansible.builtin.dnf:
+    name: mcelog
+    state: absent
+
+- name: Hardware Tuning | Clear mcelog failed state (if lingering)
+  ansible.builtin.command:
+    cmd: systemctl reset-failed mcelog.service
+  changed_when: false
+  failed_when: false
+
+# ---------------------------------------------------------------
+# rasdaemon -- hardware error monitoring (physical hosts only)
+# ---------------------------------------------------------------
+# rasdaemon uses kernel ras:* tracepoints to monitor MCE, PCIe AER,
+# DIMM CE/UE, and disk I/O errors. Stores events in a SQLite DB for
+# querying. Only useful on physical hardware -- VMs delegate hardware
+# monitoring to the hypervisor.
+- name: Hardware Tuning | Install rasdaemon (physical hosts only)
+  ansible.builtin.dnf:
+    name: rasdaemon
+    state: present
+  when: ansible_virtualization_role | default('host') != 'guest'
+
+- name: Hardware Tuning | Enable and start rasdaemon (physical hosts only)
+  ansible.builtin.systemd_service:
+    name: rasdaemon.service
+    state: started
+    enabled: true
+  when: ansible_virtualization_role | default('host') != 'guest'
+
+# ---------------------------------------------------------------
+# Audio hardware detection and ALSA service masking
+# ---------------------------------------------------------------
+# Detect whether any sound card is present. This covers both VMs
+# without virtual audio and physical machines without sound hardware.
+- name: Hardware Tuning | Detect audio hardware
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      cat /proc/asound/cards 2>/dev/null
+      | grep -c '^\s*[0-9]'
+  register: _common_audio_card_count
+  changed_when: false
+  failed_when: false
+
+- name: Hardware Tuning | Mask ALSA services (no audio hardware detected)
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    masked: true
+    enabled: false
+  loop:
+    - alsa-state.service
+    - alsa-restore.service
+  failed_when: false
+  when: (_common_audio_card_count.stdout | default('0') | int) == 0

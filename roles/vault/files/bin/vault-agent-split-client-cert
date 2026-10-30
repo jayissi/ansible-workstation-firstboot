@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# vault-agent-split-client-cert -- split Vault Agent's combined client
+# cert+key render into separate files, same pattern as vault-agent-split-cert.
+#
+# Called by Vault Agent's template command hook after rendering the
+# client-auth-combined template. Splits the single combined output
+# (one pkiCert issue call) into cert and key files, guaranteeing the
+# key always matches the cert.
+
+set -euo pipefail
+
+COMBINED="/opt/vault/agent-run/client-auth-combined.tmp"
+CERT_OUT="/etc/vault.d/certs/client.crt"
+KEY_OUT="/etc/vault.d/certs/client.key"
+
+[ -f "${COMBINED}" ] || { echo "No combined client cert render found" >&2; exit 1; }
+
+awk '/-----BEGIN VAULT-AGENT-CLIENT-CERT-----/{f=1;next} /-----BEGIN VAULT-AGENT-CLIENT-KEY-----/{f=0;next} f' \
+  "${COMBINED}" > "${CERT_OUT}.new"
+awk '/-----BEGIN VAULT-AGENT-CLIENT-KEY-----/{f=1;next} f' \
+  "${COMBINED}" > "${KEY_OUT}.new"
+
+chmod 0444 "${CERT_OUT}.new"
+chmod 0400 "${KEY_OUT}.new"
+mv -f "${CERT_OUT}.new" "${CERT_OUT}"
+mv -f "${KEY_OUT}.new" "${KEY_OUT}"

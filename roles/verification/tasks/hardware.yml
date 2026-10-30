@@ -61,3 +61,27 @@
       {{ 'PASS: Root volume is LUKS encrypted'
          if (verification_luks_parent.stdout | trim | length > 0 and verification_luks.rc == 0)
          else 'WARN: Root volume is NOT LUKS encrypted' }}
+
+# ------------------------------------------------------------------
+# Secure Boot
+# ------------------------------------------------------------------
+- name: Hardware | Check Secure Boot state
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      mokutil --sb-state 2>/dev/null
+      || (cat /sys/firmware/efi/efivars/SecureBoot-* 2>/dev/null | xxd | tail -1)
+  register: verification_secure_boot
+  changed_when: false
+  failed_when: false
+
+- name: Hardware | Assert Secure Boot status
+  ansible.builtin.assert:
+    that: verification_secure_boot.stdout is search('SecureBoot enabled')
+    quiet: true
+    success_msg: "PASS: Secure Boot is enabled"
+    fail_msg: >-
+      WARN: Secure Boot is not enabled. VMs may lack Secure Boot support.
+      IMA and TPM2 PCR-bound unseal require Secure Boot for meaningful protection.
+  register: _verification_secure_boot_assert
+  failed_when: false

@@ -41,3 +41,29 @@ template {
   perms       = 0400
   command     = "/usr/local/bin/vault-agent-split-proxy-cert"
 }
+
+{% if vault_cert_auth_enabled | default(false) | bool %}
+# Client authentication certificate (identity-bearing, 72h TTL).
+# Uses the same single-pkiCert pattern: one issue call, split into
+# cert + key by the command hook. The vault-agent-auth policy grants
+# pki_int/issue/client-auth for this template.
+template {
+  source      = "{{ vault_config_dir }}/templates/client-auth-combined.tpl"
+  destination = "{{ vault_agent_run_dir }}/client-auth-combined.tmp"
+  perms       = 0400
+  command     = "/usr/local/bin/vault-agent-split-client-cert"
+}
+{% endif %}
+
+{% if vault_ssh_enabled | default(false) | bool %}
+# Break-glass SSH certificate auto-renewal. Signs the admin's
+# Ed25519 public key via the ssh-ca/sign/breakglass role. The
+# vault-agent-auth policy grants ssh-ca/sign/breakglass for this
+# template. Output is a signed SSH certificate deployed to a path
+# the admin can reference from ~/.ssh/config.
+template {
+  source      = "{{ vault_config_dir }}/templates/breakglass-ssh-cert.tpl"
+  destination = "{{ vault_cert_dir }}/breakglass-cert.pub"
+  perms       = 0444
+}
+{% endif %}

@@ -40,6 +40,16 @@
   ansible.builtin.include_tasks: backup_secrets.yml
   when: vault_root_token | default('') | length > 0
 
+- name: Include VaultPass KV and policy setup
+  ansible.builtin.include_tasks: vaultpass.yml
+  when: vault_vaultpass_enabled | bool
+
+- name: Include TLS client cert auth and OIDC provider
+  ansible.builtin.include_tasks: cert_auth.yml
+  when:
+    - vault_cert_auth_enabled | bool
+    - vault_root_token | default('') | length > 0
+
 - name: Include root token rotation (on-demand only)
   ansible.builtin.include_tasks:
     file: rotate_token.yml

@@ -1,0 +1,45 @@
+---
+# roles/vault/tasks/vaultpass.yml
+# Seed VaultPass KV path and create read-only policy
+
+- name: Vaultpass | Seed VaultPass KV init entry
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/secret/data/vaultPass/default/.init"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      data:
+        initialized: true
+        created_by: "ansible-workstation-firstboot"
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+
+- name: Vaultpass | Create vaultpass-readonly policy
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/policies/acl/{{ vault_vaultpass_policy_name }}"
+    method: PUT
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      policy: |
+        path "secret/data/vaultPass/*" {
+          capabilities = ["read"]
+        }
+        path "secret/metadata/vaultPass/*" {
+          capabilities = ["list"]
+        }
+        path "auth/token/lookup-self" {
+          capabilities = ["read"]
+        }
+        path "auth/token/renew-self" {
+          capabilities = ["update"]
+        }
+    validate_certs: false
+    status_code:
+      - 200
+      - 204

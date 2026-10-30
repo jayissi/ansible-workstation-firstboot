@@ -124,18 +124,19 @@
         mode: "0700"
 
     - name: Init | Protect age identity with systemd-creds TPM2
+      when: vault_use_tpm2
+      no_log: true
       ansible.builtin.shell:
         cmd: |
           set -euo pipefail
           systemd-creds encrypt \
             --with-key=tpm2 \
             --name=vault-age-identity \
+            {{ '--tpm2-pcrs=7+11' if (_common_secure_boot_enabled | default(false) | bool) else '' }} \
             "{{ vault_age_identity_file }}" \
             /etc/credstore.encrypted/vault-age-identity.cred
           shred -u "{{ vault_age_identity_file }}"
       changed_when: true
-      when: vault_use_tpm2
-      no_log: true
 
     - name: Init | Redeploy unseal service with TPM2 credential
       ansible.builtin.template:

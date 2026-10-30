@@ -193,13 +193,28 @@
     group: root
     mode: '0644'
 
-- name: Configure | Deploy Chrome uBlock Origin force-install policy
+- name: Configure | Deploy Chrome extension force-install policy (uBlock Origin + VaultPass)
   ansible.builtin.copy:
     dest: /etc/opt/chrome/policies/managed/extensions.json
     content: |
       {
         "ExtensionInstallForcelist": [
-          "cjpalhdlnbpafiamejdnhcphjbkeiagm;https://clients2.google.com/service/update2/crx"
+          "cjpalhdlnbpafiamejdnhcphjbkeiagm;https://clients2.google.com/service/update2/crx",
+          "kbndeonibamcpiibocdhlagccdlmefco;https://clients2.google.com/service/update2/crx"
+        ]
+      }
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Configure | Deploy Chrome incognito extensions policy
+  ansible.builtin.copy:
+    dest: /etc/opt/chrome/policies/managed/incognito-extensions.json
+    content: |
+      {
+        "MandatoryExtensionsForIncognitoNavigation": [
+          "cjpalhdlnbpafiamejdnhcphjbkeiagm",
+          "kbndeonibamcpiibocdhlagccdlmefco"
         ]
       }
     owner: root

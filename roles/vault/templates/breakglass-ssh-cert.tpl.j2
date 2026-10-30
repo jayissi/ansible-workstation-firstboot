@@ -1,0 +1,4 @@
+{{ "{{" }} $pubKey := file "{{ vault_cert_dir }}/breakglass-admin-pubkey.pub" | trimSpace {{ "}}" }}
+{{ "{{" }}- with secret "ssh-ca/sign/breakglass" (printf "public_key=%s" $pubKey) "valid_principals={{ common_admin_user }}" "cert_type=user" "ttl={{ vault_ssh_ca_ttl }}" -{{ "}}" }}
+{{ "{{" }} .Data.signed_key {{ "}}" }}
+{{ "{{" }}- end -{{ "}}" }}

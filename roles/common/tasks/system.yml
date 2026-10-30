@@ -21,6 +21,7 @@
     owner: root
     group: root
     mode: "0644"
+  notify: Restart polkit
 
 # Set the system default target (graphical.target for workstations)
 - name: System | Set system default target

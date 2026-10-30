@@ -24,6 +24,14 @@ MD024:
 # MD033/no-inline-html - disabled (Ansible docs use HTML for badges/tables)
 MD033: false
 
+# MD060/table-column-style - disabled; markdown-table-formatter is the
+# authoritative table formatter in the lint pipeline and its --check
+# already passes.  MD060 conflicts when data cells exceed the header
+# column width (formatter pads shorter cells to header width but does
+# not truncate longer cells, creating mixed pipe alignment that MD060
+# flags).
+MD060: false
+
 # MD046/code-block-style - fenced code blocks only
 MD046:
   style: fenced

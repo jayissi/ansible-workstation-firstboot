@@ -1,0 +1,1 @@
+## <summary>Allow systemd-logind to getattr on USBGuard libqb shm dirs</summary>

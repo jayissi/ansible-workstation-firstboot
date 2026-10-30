@@ -297,10 +297,11 @@ releases and installed to `/usr/local/bin/vault-ssh-helper`.
 **Validation:** `vault-ssh-helper -verify-only -config /etc/vault-ssh-helper.d/config.hcl`
 returns successfully; PAM OTP authentication works end to end.
 
-**Status:** Fixed. **Backlog note:** The download currently has no
-SHA-256 checksum verification — a supply-chain hardening gap. Add a
-`checksum:` parameter to the `get_url` task or document the accepted
-risk.
+**Status:** Fixed. SHA-256 checksum now pins the download
+(`checksum: sha256:{{ auth_vault_ssh_helper_checksum }}` in
+`roles/auth/tasks/install.yml`, with `validate_certs: false`
+compensated by the pinned checksum). Inline `checkov` skip annotation
+documents the accepted risk.
 
 ---
 
@@ -514,6 +515,179 @@ and yum_repository tasks as `ok` (not `changed`) on the second run.
 
 ---
 
+### 22. AIDE baseline silently overwritten on every deploy
+
+**Symptoms:** `aide --init` ran on every Ansible deploy, silently
+overwriting the integrity baseline database. AIDE's daily integrity
+check (`aide_cron_check` timer) always compared against a
+minutes-old baseline, making it unable to detect persistent
+unauthorized changes.
+
+**Root Cause:** `aide_init: true` was set statically in
+`inventory/group_vars/all/main.yml`, unconditionally triggering
+`aide --init` on every run. The previous documentation incorrectly
+described this as "intentional" — it was a bug that defeated
+file-integrity monitoring.
+
+**Fix:** `playbooks/site.yml` Phase 3 `pre_tasks` now stats
+`/var/lib/aide/aide.db.gz` and sets `aide_init` dynamically via
+`set_fact` — `true` only on first bootstrap (database absent),
+`false` on subsequent runs.
+
+**Validation:** `mtime` + checksum of `aide.db.gz` are identical
+before and after a deploy once the baseline exists (post-fix).
+
+**Status:** Fixed.
+
+---
+
+### 23. SSH OTP 4-layer non-functionality
+
+**Symptoms:** SSH OTP login via vault-ssh-helper was completely
+non-functional despite being documented as a feature. A Vault-issued
+OTP was rejected at every attempt.
+
+**Root Cause:** Four stacked bugs, each only visible after fixing
+the previous one:
+
+1. **Orphaned PAM file** — PAM content was deployed to
+   `/etc/pam.d/vault-ssh-helper`, which sshd never references
+   (OpenSSH hardcodes the PAM service name to `sshd`).
+2. **Log file DAC** — `/var/log/vault-ssh-helper.log` could not be
+   created by sshd's pre-auth worker (unprivileged process, cannot
+   create files in `/var/log/` with `0755` permissions).
+3. **Wrong SELinux domain** — the SELinux module targeted `sshd_t`
+   (listener), but Fedora 44's OpenSSH 10.2p1 re-exec architecture
+   runs the PAM stack under `sshd_session_t` (per-connection domain).
+4. **Hidden dontaudit'd `open` permission** — `sshd_session_t`
+   needed `open` on `var_log_t:file`, but the denial was suppressed
+   by a `dontaudit` rule (required `semodule -DB` to surface).
+
+**Fix:** Moved PAM content into `/etc/pam.d/sshd`. Pre-created the
+log file with `root:sshd 0620` permissions. Updated
+`sshd-vault-ssh-helper.te` to v1.2.0 covering `sshd_session_t` with
+`file { open append }`.
+
+**Validation:** Real Vault-issued OTP → successful SSH login
+confirmed end-to-end.
+
+**Status:** Fixed.
+
+---
+
+### 24. Break-glass SSH cert rendering crash-loop
+
+**Symptoms:** Vault Agent's break-glass SSH certificate template
+continuously failed to render, preventing break-glass cert
+provisioning entirely.
+
+**Root Cause:** `breakglass-ssh-cert.tpl.j2` hardcoded
+`~/.ssh/id_ed25519.pub` which did not exist (admin used a
+project-specific key). Additionally, the `vault` user (uid=963) could
+not traverse the admin's `0700` home directory regardless.
+
+**Fix:** Ansible task extracts the admin's trusted public key from
+`authorized_keys` and deploys it to
+`/etc/vault.d/certs/breakglass-admin-pubkey.pub` (`vault:vault 0440`).
+Template updated to read from that vault-accessible path.
+
+**Validation:** Break-glass SSH certificate successfully rendered for
+the first time.
+
+**Status:** Fixed.
+
+---
+
+### 25. vault-agent-secret `RemainAfterExit` preventing re-provisioning
+
+**Symptoms:** After restarting `vault-agent`, the AppRole `secret_id`
+file was missing. `vault-agent-secret.service` showed
+`active (exited)` but its `ExecStart` never re-ran.
+
+**Root Cause:** `RemainAfterExit=true` on the AppRole secret_id
+decrypt oneshot caused systemd to consider the unit "already
+satisfied" on subsequent `vault-agent` restarts. The `ExecStart`
+(which decrypts the TPM2-sealed secret_id ciphertext) never re-ran,
+leaving `vault-agent` with no `secret_id` file.
+
+**Fix:** Removed `RemainAfterExit` from
+`vault-agent-secret.service`.
+
+**Validation:** Self-healing verified — restarting `vault-agent`
+alone auto-triggers `vault-agent-secret` via the
+`Requires=` / `Before=` dependency chain, re-provisioning the
+`secret_id` file.
+
+**Status:** Fixed.
+
+---
+
+### 26. P-384 Root/Intermediate CA silently stuck at P-256
+
+**Symptoms:** Despite `vault_pki_key_type: ec` being set, Root CA
+and Intermediate CA certificates were generated with P-256 curves
+instead of the intended P-384 (CNSA 2.0).
+
+**Root Cause:** `pki_engine.yml`'s Root CA
+(`pki/root/generate/internal`) and Intermediate CSR
+(`pki_int/intermediate/generate/internal`) tasks specified `key_type`
+but were **missing** the `key_bits` parameter. Vault silently
+defaults to P-256 for EC keys when `key_bits` is omitted.
+
+**Fix:** Added `key_bits: '{{ vault_pki_key_bits }}'` (384) to both
+the Root CA generation and Intermediate CSR generation tasks.
+
+**Validation:** Regenerated full CA chain; all 5 certificate types
+(Root CA, Intermediate CA, vault-server, nginx-gateway, client-auth)
+confirmed P-384 via `openssl x509 -noout -text | grep ASN1 OID`.
+
+**Status:** Fixed.
+
+---
+
+### 27. pam_unix invalid `not_set_pass` option
+
+**Symptoms:** Every SSH login generated a PAM error about an invalid
+option, logged to the authentication journal.
+
+**Root Cause:** Orphaned, never-tested PAM content included
+`not_set_pass` which is not a valid `pam_unix` option.
+
+**Fix:** Removed the invalid option, keeping the valid
+`use_first_pass nodelay`.
+
+**Validation:** SSH login proceeds without PAM errors in the journal.
+
+**Status:** Fixed.
+
+---
+
+### 28. Lint infrastructure 8-fix sweep
+
+**Symptoms:** Multiple linter failures when running `make lint`
+against the full repository. CI pipeline had a placeholder path
+mismatch. False positives on legitimate acronyms.
+
+**Root Cause:** The `collections/` vendored directory was not
+excluded from 6 linter configurations (yamllint, ruff, pyright,
+markdownlint-cli2, codespell scan args, checkov skip-path).
+Additional issues: `vault_pass.txt` missing from `Containerfile`
+`CMD` (CI had placeholder, local Podman path did not match), codespell
+false positives on AER/UE hardware acronyms, and checkov inline skip
+needed for vault-ssh-helper `validate_certs: false` (compensated by
+pinned SHA-256 checksum).
+
+**Fix:** Added `collections/` exclusions to all 6 tool configs.
+Fixed `vault_pass.txt` path in `Containerfile`. Added AER/UE to
+codespell's ignore-words list. Added inline checkov skip annotation
+with compensating-control justification.
+
+**Validation:** `make lint` passes cleanly across all tools.
+
+**Status:** Fixed.
+
+---
+
 ## Backlog / Future Work
 
 Deferred items tracked for future implementation. These are not
@@ -550,11 +724,13 @@ needs to reach Vault's port next.
 
 ### Break-Glass Cert Auto-Renewal
 
-Extend Vault Agent's `template` stanza (same mechanism already proven
-for the TLS leaf cert) to pre-render a fresh break-glass SSH
-certificate to local disk on a cadence inside the 72h max TTL, so
-break-glass access does not depend on a human remembering to re-issue
-it at the moment of crisis.
+~~Extend Vault Agent's `template` stanza to pre-render a fresh
+break-glass SSH certificate to local disk on a cadence inside the 72h
+max TTL.~~
+
+**Status:** Implemented — `breakglass-ssh-cert.tpl.j2` Vault Agent
+template auto-renews the break-glass SSH certificate to local disk
+within its TTL window.
 
 ### Ansible-Vault Password TPM2+age Layering
 
@@ -629,25 +805,29 @@ for boot-time policy loading. Dedicate an ADR once evaluated.
 
 ### TPM2 PCR-Bound Vault Unseal Credentials
 
-Strengthen auto-unseal by binding the age identity credential to
+~~Strengthen auto-unseal by binding the age identity credential to
 specific boot-chain PCR values
 (`systemd-creds encrypt --with-key=tpm2 --tpm2-pcrs=7+11`), not just
-TPM chip presence. This means the credential only decrypts if the
-system booted with the expected kernel/initrd/bootloader — a USB
-live-boot attacker with physical access to the same TPM chip would get
-different PCR values and the credential stays sealed.
+TPM chip presence.~~
 
-Caveat: kernel updates change PCR values, requiring re-sealing before
-reboot. `systemd-measure` can pre-calculate expected PCR values for
-new UKI images. Worth an ADR documenting the capability and the
-kernel-update operational procedure.
+**Status:** Implemented — `roles/vault/tasks/init.yml` gates
+`systemd-creds encrypt` with `--tpm2-pcrs=7+11` when
+`_common_secure_boot_enabled` is true. The credential only decrypts
+if the system booted with the expected kernel/initrd/bootloader.
+
+**Note:** kernel updates change PCR values, requiring re-sealing
+before reboot. `systemd-measure` can pre-calculate expected PCR values
+for new UKI images.
 
 ### Secure Boot Verification
 
-Add a check in the verification role to confirm Secure Boot is actually
-enabled. The project sets `audit=1` in bootloader params but does not
-verify Secure Boot status. This is a critical prerequisite for IMA
-appraisal and TPM2 PCR binding to be meaningful.
+~~Add a check in the verification role to confirm Secure Boot is
+actually enabled.~~
+
+**Status:** Implemented — `roles/common/tasks/preflight.yml` and
+`roles/verification/tasks/hardware.yml` now check Secure Boot status
+with adaptive `WARN` (non-fatal for VMs / hardware without SB
+support).
 
 ### USBGuard Class-Based Policy Refinement
 
@@ -664,27 +844,51 @@ hardening checklist.
 
 ### AIDE `/boot/efi` SELinux `dosfs_t` Denial
 
-`aide_t` lacks `getattr` permission on the `vfat` filesystem class,
-causing AVC denials when AIDE scans `/boot/efi`. The AIDE baseline
-still succeeds (denials are non-fatal), but the AVC log noise is
-undesirable. Options: exclude `/boot/efi` in `aide.conf`, or write a
-scoped `.te` rule granting `aide_t` the minimal permission.
+~~`aide_t` lacks `getattr` permission on the `vfat` filesystem class,
+causing AVC denials when AIDE scans `/boot/efi`.~~
+
+**Status:** Fixed — `aide-efi.te` SELinux module created and deployed,
+granting `aide_t` the minimal `getattr` permission on `dosfs_t`.
 
 ### fapolicyd GDM Socket Denial
 
-During deploy-time trust-database rebuilds, fapolicyd briefly denies
-GDM's access to a Unix socket. This occurs only during the initial
-`fapolicyd-cli --update` triggered by Ansible and has zero recurrence
-on a clean reboot. fapolicyd stays active and enforcing throughout.
-No fix required unless the denial becomes reproducible outside
-deploy-time conditions.
+~~During deploy-time trust-database rebuilds, fapolicyd briefly denies
+GDM's access to a Unix socket.~~
 
-### `aide_init: true` Baseline Refresh Every Deploy
+**Status:** Fixed — `fapolicyd-gdm.te` v1.1.0 handles both
+`sock_file write` and `unix_stream_socket connectto` permissions.
 
-The `aide_init: true` variable causes AIDE to regenerate its baseline
-database on every Ansible run. This is intentional: the baseline
-represents the last Ansible-applied state, ensuring that any
-configuration drift between deploys is detected. Genuine file
-integrity monitoring relies on the independent `aide_cron_check`
-systemd timer, which runs daily against the last-deployed baseline.
-This is a design tradeoff, not a bug.
+### AppRole `secret_id` Rotation
+
+`secret_id_num_uses: 0` (unlimited) and `secret_id_ttl: 0` (never
+expires) is weaker than HashiCorp's recommended posture. Mitigated by
+TPM2-bound ciphertext, short-lived derived tokens (1h/4h), and
+least-privilege policies. Future improvement: extend
+`vault-agent-secret.service` to call the Vault API for a fresh
+`secret_id` on each run rather than re-decrypting static ciphertext.
+
+### Duplicate sudo NOPASSWD Line
+
+Both the base image and `00-hardening` drop-in contain a sudo
+`NOPASSWD` line for the admin user. Identified during E2E validation
+but not yet consolidated. Functionally harmless (sudo processes both,
+second is redundant) but should be deduplicated.
+
+### Vendor-Role Non-Idempotency
+
+`linux-system-roles.tlog`, `linux-system-roles.tuned`, and
+`linux-system-roles.fapolicyd` have unconditional `changed_when: true`
+tasks. Confirmed-correct end-state via direct verification. Not a bug
+to patch — the `collections/` directory is vendored and not modified
+per project convention. `changed=18` on idempotent re-runs is the
+established baseline.
+
+### `crypto_policies` FUTURE Profile Tested and Reverted
+
+`crypto_policies` FUTURE was tested and reverted to DEFAULT. Root
+cause: RSA 2048-bit EE certificates on `releases.hashicorp.com` and
+`packages.microsoft.com` are rejected by the FUTURE profile.
+vault-ssh-helper download uses `validate_certs: false` + pinned
+SHA-256 checksum as a compensating control. The `rpm_key` module has
+no `validate_certs` option for the Microsoft GPG key case, making
+FUTURE policy impractical without broader CDN/repository changes.

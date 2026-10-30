@@ -1,0 +1,5 @@
+## <summary>policy for browser-tpm2</summary>
+## <desc>
+##   Allow staff_t to access TPM2 devices for PKCS#11 browser
+##   client certificate authentication.
+## </desc>

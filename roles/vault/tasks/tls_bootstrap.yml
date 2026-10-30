@@ -1,13 +1,13 @@
 ---
 # roles/vault/tasks/tls_bootstrap.yml
 # Generate temporary self-signed TLS cert for Vault bootstrap.
-# Supports ECDSA P-256 (default) or Ed25519 via vault_pki_key_type variable.
+# Supports ECDSA P-384 (default) or Ed25519 via vault_pki_key_type variable.
 
 - name: Tls Bootstrap | Generate bootstrap private key
   community.crypto.openssl_privatekey:
     path: "{{ vault_tls_key_file }}"
     type: "{{ 'Ed25519' if vault_pki_key_type == 'ed25519' else 'ECC' }}"
-    curve: "{{ omit if vault_pki_key_type == 'ed25519' else 'secp256r1' }}"
+    curve: "{{ omit if vault_pki_key_type == 'ed25519' else 'secp' ~ vault_pki_key_bits ~ 'r1' }}"
     owner: "{{ vault_user }}"
     group: "{{ vault_group }}"
     mode: "0400"

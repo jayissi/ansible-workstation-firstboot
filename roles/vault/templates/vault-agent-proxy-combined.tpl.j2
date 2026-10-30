@@ -1,4 +1,4 @@
-{{ "{{" }}- with pkiCert "pki_int/issue/workstation-leaf" "common_name={{ vault_local_hostname }}" "alt_names={{ vault_local_hostname }}" "ttl={{ vault_pki_leaf_ttl }}" -{{ "}}" }}
+{{ "{{" }}- with pkiCert "pki_int/issue/nginx-gateway" "common_name={{ vault_pki_nginx_cn }}" "alt_names={{ vault_local_hostname }}" "ttl={{ vault_pki_leaf_ttl }}" -{{ "}}" }}
 -----BEGIN VAULT-AGENT-PROXY-CERT-----
 {{ "{{" }} .Cert {{ "}}" }}
 {{ "{{" }} .CA {{ "}}" }}

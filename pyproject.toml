@@ -4,7 +4,7 @@ target-version = "py311"
 # These excludes duplicate .gitignore entries but are necessary because
 # ruff only reads .gitignore when .git/ exists, and .git/ is excluded
 # from the lint container via .containerignore (for security/size/cache).
-exclude = ["roles/linux-system-roles.*", "roles/willshersystems.*", ".venv"]
+exclude = ["roles/linux-system-roles.*", "roles/willshersystems.*", "collections", ".venv"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "S"]
@@ -13,11 +13,11 @@ select = ["E", "F", "W", "I", "UP", "B", "S"]
 typeCheckingMode = "basic"
 pythonVersion = "3.11"
 # Same rationale as [tool.ruff] exclude above.
-exclude = ["roles/linux-system-roles.*", "roles/willshersystems.*", ".venv", "**/__pycache__"]
+exclude = ["roles/linux-system-roles.*", "roles/willshersystems.*", "collections", ".venv", "**/__pycache__"]
 
 [tool.codespell]
 skip = ".git,*.pdf,.venv,*.te,*.fc,*.if"
-ignore-words-list = "hashi,te"
+ignore-words-list = "hashi,te,aer,ue"
 
 [tool.bandit]
 exclude_dirs = [".venv"]

@@ -44,15 +44,64 @@
     mode: "0644"
   when: auth_vault_ssh_helper_enabled | bool
 
-- name: Configure | Deploy vault-ssh-helper PAM configuration
-  ansible.builtin.copy:
-    dest: /etc/pam.d/vault-ssh-helper
-    content: |
-      # Managed by ansible-workstation-firstboot (auth role)
-      # vault-ssh-helper OTP validation via pam_exec
-      auth requisite pam_exec.so quiet expose_authtok log=/var/log/vault-ssh-helper.log /usr/bin/vault-ssh-helper -config=/etc/vault-ssh-helper.d/config.hcl
-      auth optional pam_unix.so not_set_pass use_first_pass nodelay
+- name: Configure | Remove orphaned, unreferenced vault-ssh-helper PAM service file
+  ansible.builtin.file:
+    path: /etc/pam.d/vault-ssh-helper
+    state: absent
+
+# pam_exec's "log=" option needs to CREATE the log file on first use
+# if it doesn't already exist. Confirmed via runtime testing: this
+# happens in sshd's PRE-AUTH worker (OpenSSH privilege separation --
+# "sshd-session" runs the auth-stage PAM stack unprivileged, before
+# the user is authenticated), which cannot create new files in
+# /var/log (root:root 0755, no group/other write) -- pam_exec failed
+# with "exit code 13" / "Permission denied" trying to O_CREAT the
+# file. Pre-creating it as root (Ansible can write to /var/log) with
+# group-writable permissions lets the unprivileged worker APPEND to
+# the already-existing file (which only needs the file's own write
+# bit, not directory write access) without ever needing to create it.
+- name: Configure | Pre-create vault-ssh-helper log file (sshd pre-auth cannot create it)
+  ansible.builtin.file:
+    path: /var/log/vault-ssh-helper.log
+    state: touch
     owner: root
-    group: root
-    mode: "0644"
+    group: sshd
+    mode: "0620"
+    access_time: preserve
+    modification_time: preserve
+
+  # /etc/pam.d/vault-ssh-helper (a standalone, unreferenced PAM service
+  # file) was deployed here previously, but NOTHING points sshd at a
+  # PAM service named "vault-ssh-helper" -- OpenSSH's PAM service name
+  # is hardcoded to "sshd", which uses /etc/pam.d/sshd. Confirmed via
+  # runtime testing: a real Vault-issued OTP was REJECTED on login
+  # ("Permission denied (publickey,keyboard-interactive)"), sshd's
+  # journal showed pam_unix/pam_sss authentication failures (it was
+  # checking the OTP against the user's real password), and
+  # /var/log/vault-ssh-helper.log was never created -- the helper was
+  # never invoked. /etc/pam.d/sshd is NOT authselect-managed and is
+  # NOT touched by willshersystems.sshd (confirmed: no pam.d/sshd
+  # references in that role's tasks), so it is safe to edit directly.
+  #
+  # This block replaces sshd's default "auth substack password-auth"
+  # line (which falls through to pam_unix/pam_sss checking the user's
+  # real system password) with vault-ssh-helper OTP validation. The
+  # "requisite" control flag halts immediately on an invalid/expired
+  # OTP -- there is no password fallback by design (PasswordAuthentication
+  # is already "no"; keyboard-interactive exists solely for OTP).
+- name: Configure | Remove sshd's default password-auth substack (replaced by vault-ssh-helper)
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/sshd
+    regexp: '^auth\s+substack\s+password-auth'
+    state: absent
+  when: auth_vault_ssh_helper_enabled | bool
+
+- name: Configure | Wire vault-ssh-helper into sshd's PAM auth stack
+  ansible.builtin.blockinfile:
+    path: /etc/pam.d/sshd
+    insertafter: '^#%PAM-1.0'
+    marker: "# {mark} ANSIBLE MANAGED BLOCK -- vault-ssh-helper OTP validation"
+    block: |
+      auth requisite pam_exec.so quiet expose_authtok log=/var/log/vault-ssh-helper.log /usr/bin/vault-ssh-helper -config=/etc/vault-ssh-helper.d/config.hcl
+      auth optional pam_unix.so use_first_pass nodelay
   when: auth_vault_ssh_helper_enabled | bool

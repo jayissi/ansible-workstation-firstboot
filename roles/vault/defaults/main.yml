@@ -29,13 +29,22 @@ vault_proxy_cert_dir: /etc/nginx/certs
 vault_key_shares: 5
 vault_key_threshold: 3
 
-# PKI key type: "ec" (ECDSA P-256, browser-compatible) or "ed25519" (future)
+# PKI key type: "ec" (ECDSA P-384, CNSA 2.0 compliant) or "ed25519" (future)
 vault_pki_key_type: ec
-vault_pki_key_bits: 256
+vault_pki_key_bits: 384
 
 # Certificate subject fields
-vault_pki_organization: "Local Example Corp"
-vault_pki_ou: "IT Department"
+vault_pki_organization: "Local Lab Infrastructure"
+vault_pki_ou: "PKI Infrastructure"
+vault_pki_ca_ou: "PKI Infrastructure"
+
+# Per-cert identity: distinct CN/OU per certificate purpose
+vault_pki_vault_server_cn: "HashiCorp Vault"
+vault_pki_vault_server_ou: "Secrets Management"
+vault_pki_nginx_cn: "Nginx Gateway"
+vault_pki_nginx_ou: "Network Services"
+vault_pki_client_auth_cn: "{{ common_admin_user }} - VaultPass"
+vault_pki_client_auth_ou: "Workstation Auth"
 vault_pki_locality: "Washington"
 vault_pki_province: "District of Columbia"
 vault_pki_country: "US"
@@ -60,3 +69,17 @@ vault_ssh_otp_cidr_list: "192.168.122.0/24,127.0.0.1/32"
 vault_ssh_ca_key_type: ed25519
 vault_ssh_ca_ttl: "24h"
 vault_ssh_ca_max_ttl: "72h"
+
+# VaultPass browser extension
+vault_vaultpass_enabled: true
+vault_vaultpass_kv_path: "secret/vaultPass"
+vault_vaultpass_policy_name: "vaultpass-readonly"
+vault_vaultpass_token_ttl: "1h"
+vault_vaultpass_token_max_ttl: "24h"
+
+# TLS client cert auth
+vault_cert_auth_enabled: true
+vault_oidc_provider_enabled: true
+vault_client_cert_ttl: "72h"
+vault_client_cert_max_ttl: "168h"
+vault_client_cert_tpm2_handle: "0x81000001"

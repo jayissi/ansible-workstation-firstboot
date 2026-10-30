@@ -18,6 +18,8 @@ first PR; reviewers will check against it.
 - [Key Ordering in Task Blocks](#key-ordering-in-task-blocks)
 - [Playbook Syntax](#playbook-syntax)
 - [Comments](#comments)
+- [SELinux Policy Conventions](#selinux-policy-conventions)
+- [Hardware Detection](#hardware-detection)
 - [Enforcement Summary](#enforcement-summary)
 
 ---
@@ -464,6 +466,88 @@ Don't comment the obvious:
 
 ---
 
+## SELinux Policy Conventions
+
+### Module Naming
+
+Pattern: **`{daemon}-{target}.te`** — one narrowly-scoped module per
+distinct (source domain, target type) pair. Each module ships as a
+`.te` / `.if` / `.fc` triplet.
+
+| Module file                | Source domain               | Target type            |
+|----------------------------|-----------------------------|------------------------|
+| `fapolicyd-gdm.te`         | `fapolicyd_t`               | `xdm_t`                |
+| `logind-usbguard.te`       | `systemd_logind_t`          | `usbguard_t`           |
+| `usbguard-gdm.te`          | `usbguard_t`                | `xdm_t`                |
+| `auditctl-log.te`          | `auditctl_t`                | `var_log_t`            |
+| `sshd-vault-ssh-helper.te` | `sshd_t` / `sshd_session_t` | `vault_cluster_port_t` |
+
+The handler in `roles/auth/handlers/main.yml` compiles **all** `*.te`
+files found in the `auth_selinux_dir` directory, so adding a new module
+only requires dropping the triplet into that directory and notifying
+the handler.
+
+### Dontaudit Debugging
+
+When a permission denial fails silently (no AVC in `ausearch`), the
+kernel may be suppressing the denial via a `dontaudit` rule. Standard
+diagnostic procedure:
+
+1. `semodule -DB` — temporarily disable **all** `dontaudit` rules
+2. Reproduce the failing action
+3. `ausearch -m AVC -ts recent` — capture the now-visible denials
+4. `semodule -B` — re-enable `dontaudit` rules immediately after
+
+This technique was used to discover the hidden `sshd_session_t` `open`
+permission denial on `var_log_t:file` for vault-ssh-helper.
+
+### File-Class Permission Pattern
+
+For the SELinux `file` class, **both** `open` **and** the specific
+access permission (`read`, `append`, `write`, etc.) are independently
+required as **separate** `allow` rules. For the `dir` class, typically
+only the access permission (`read`, `search`, etc.) is needed
+**without** a separate `open`.
+
+| Module                     | Class | Permissions needed             |
+|----------------------------|-------|--------------------------------|
+| `auditctl-log.te`          | file  | `open` + `read` (two allows)   |
+| `auditctl-log.te`          | dir   | `read` only (no `open`)        |
+| `sshd-vault-ssh-helper.te` | file  | `open` + `append` (two allows) |
+
+### Fedora 44 `sshd_session_t` Gotcha
+
+OpenSSH 10.2p1's re-exec architecture splits the sshd process into
+two SELinux domains:
+
+- **`sshd_t`** — the persistent listener daemon
+- **`sshd_session_t`** — the per-connection session handler (executes
+  PAM stack, spawns user shell)
+
+SELinux modules targeting sshd PAM extensions (such as
+vault-ssh-helper) **must** target `sshd_session_t`, not just `sshd_t`.
+The existing `sshd-vault-ssh-helper.te` v1.2.0 covers **both** domains
+for forward compatibility.
+
+---
+
+## Hardware Detection
+
+Prefer runtime hardware detection over static VM/bare-metal
+assumptions. Key patterns:
+
+| Detection goal     | Recommended approach               | Avoid                 |
+|--------------------|------------------------------------|-----------------------|
+| Sound card present | `/proc/asound/cards` line count    | Blanket VM-only gate  |
+| VM vs bare-metal   | `ansible_virtualization_role` fact | Static inventory flag |
+
+**Example:** ALSA masking uses card-count detection — this correctly
+handles VMs **with** virtual sound cards and headless physical servers
+**without** sound cards, rather than a blanket "skip if VM" gate that
+would be wrong in both edge cases.
+
+---
+
 ## Enforcement Summary
 
 | Convention                        | Enforced by                              | Config file                               |
@@ -483,6 +567,11 @@ Don't comment the obvious:
 | Role structure / split threshold  | **PR review**                            | This document                             |
 | Playbook key ordering             | **PR review**                            | This document                             |
 | Comment style                     | **PR review**                            | This document                             |
+| SELinux module naming             | **PR review**                            | This document                             |
+| SELinux dontaudit debugging       | **PR review**                            | This document                             |
+| SELinux file-class permissions    | **PR review**                            | This document                             |
+| `sshd_session_t` domain targeting | **PR review**                            | This document                             |
+| Hardware detection patterns       | **PR review**                            | This document                             |
 
 All linters run via `make lint` inside the Podman container defined in
 `lint/Containerfile.lint`. See [../CONTRIBUTING.md](../CONTRIBUTING.md) for

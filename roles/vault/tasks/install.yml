@@ -78,6 +78,7 @@
     owner: root
     group: root
     mode: "0644"
+  notify: Restart polkit
 
 - name: Install | Deploy tmpfiles.d config for vault run dirs
   ansible.builtin.copy:

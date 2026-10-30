@@ -6,6 +6,7 @@ globs:
 ignores:
   - "docs/CHANGELOG.md"
   - ".venv/**"
+  - "collections/**"
   - "roles/linux-system-roles*/**"
   - "roles/willshersystems*/**"
   - "roles/fedora.*/**"

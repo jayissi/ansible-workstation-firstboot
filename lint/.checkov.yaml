@@ -8,6 +8,7 @@
 # they are not our code and we do not maintain them.
 skip-path:
   - 'roles/(linux-system-roles\.|willshersystems\.)'
+  - 'collections/'
 
 framework:
   - ansible

@@ -33,7 +33,7 @@
     group: root
     mode: "0755"
 
-- name: Browser Trust | Deploy Firefox enterprise policy (CA trust + DoH disable + uBlock Origin)
+- name: Browser Trust | Deploy Firefox enterprise policy (CA trust + DoH disable + extensions)
   ansible.builtin.copy:
     dest: /etc/firefox/policies/policies.json
     content: |
@@ -49,7 +49,13 @@
           "ExtensionSettings": {
             "uBlock0@raymondhill.net": {
               "installation_mode": "force_installed",
-              "install_url": "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi"
+              "install_url": "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi",
+              "private_browsing": true
+            },
+            "addon@blum.coffee": {
+              "installation_mode": "force_installed",
+              "install_url": "https://addons.mozilla.org/firefox/downloads/latest/vaultpass/latest.xpi",
+              "private_browsing": true
             }
           }
         }

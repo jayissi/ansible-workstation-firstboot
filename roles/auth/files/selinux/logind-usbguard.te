@@ -1,0 +1,15 @@
+policy_module(logind-usbguard, 1.1.0)
+
+# Allow systemd-logind to getattr AND read USBGuard's libqb IPC
+# shared memory directory (/dev/shm/qb-*). systemd-logind enumerates
+# /dev/shm entries (both stat and listing) during session/seat
+# management; this type only exists once usbguard-dbus (which uses
+# libqb for IPC) is installed.
+
+require {
+    type systemd_logind_t;
+    type usbguard_tmpfs_t;
+    class dir { getattr read };
+}
+
+allow systemd_logind_t usbguard_tmpfs_t:dir { getattr read };
