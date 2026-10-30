@@ -30,8 +30,8 @@ workstations. The hardening stack is applied in dependency-aware tiers
 | **AIDE** | File integrity monitoring. Database initialized *last* after all hardening is complete, capturing the fully hardened baseline. Daily checks via systemd timer. |
 | **USBGuard** | USB device allowlisting. Blocks unauthorized USB devices at the kernel level. |
 | **HashiCorp Vault CE** | Secrets backbone. ECDSA P-256 TLS via internal PKI engine; auto-rotating certificates; age+TPM2 encrypted unseal keys. |
-| **Auth** | Authselect profile management + PAM hardening (faillock, pwquality, pwhistory). vault-ssh-helper PAM integration for Vault OTP validation. Custom SELinux policy (`sshd-vault-ssh-helper.te`) allows sshd to reach Vault for OTP checks. |
-| **SSH Credential Gateway** | Narrowly-scoped Nginx vhost on port 8443 exposing only two Vault API paths (`/v1/ssh-otp/creds/`, `/v1/ssh-ca/sign/`) to the bastion host. All other paths return HTTP 403. |
+| **Auth** | Authselect + PAM hardening (faillock, pwquality, pwhistory). vault-ssh-helper OTP validation via `pam_exec`. Custom SELinux policy for sshd-to-Vault connectivity. |
+| **SSH Credential Gateway** | Nginx vhost (:8443) exposing only `/v1/ssh-otp/creds/` and `/v1/ssh-ca/sign/` to the bastion. All other paths return 403. |
 | **Auditd** | Kernel audit framework. 50 CIS/NIST/STIG-aligned syscall rules covering file access, privilege escalation, and authentication events. |
 
 ### CIS/STIG Alignment

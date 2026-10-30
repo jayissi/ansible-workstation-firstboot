@@ -2,6 +2,13 @@
 plugins:
   md013:
     enabled: false
+  # MD024: markdownlint-cli2 handles this with siblings_only: true
+  # (allows identical sub-headings under different parent sections).
+  # pymarkdown lacks a siblings_only option and would reject
+  # patterns like "### Enforcement" repeated under each convention
+  # section in CONVENTIONS.md. Disable here to avoid false positives.
+  md024:
+    enabled: false
   md033:
     enabled: false
   md041:
