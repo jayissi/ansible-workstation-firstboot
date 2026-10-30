@@ -12,6 +12,7 @@ var_naming_pattern: "^[a-z_][a-z0-9_]*$"
 exclude_paths:
   - .venv/
   - .github/
+  - collections/
   - docs/
   - inventory/group_vars/all/vault.yml
   - lint/Containerfile.lint

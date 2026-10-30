@@ -6,7 +6,7 @@ __pycache__/
 *.py[cod]
 
 # =============================================================================
-# Ansible Galaxy roles (downloaded via requirements.yml, not our code)
+# Ansible Galaxy content (downloaded via requirements.yml, not our code)
 # On the host (where .git/ exists), ruff/pyright auto-exclude these via
 # .gitignore. Inside the Podman lint container, .git/ is excluded via
 # .containerignore, so these tools cannot read .gitignore -- the explicit
@@ -14,6 +14,7 @@ __pycache__/
 # =============================================================================
 roles/linux-system-roles.*/
 roles/willshersystems.*/
+collections/ansible_collections/
 *.retry
 
 # =============================================================================
