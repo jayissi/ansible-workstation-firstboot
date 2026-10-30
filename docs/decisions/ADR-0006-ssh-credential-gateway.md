@@ -22,12 +22,12 @@ the bastion out entirely.
 
 ### Alternatives Considered
 
-| Option | Pros | Cons |
-| --- | --- | --- |
-| Widen existing Nginx proxy to `0.0.0.0:443` | Minimal config change | Exposes Vault UI, KV, PKI, sys/ — entire API surface to the network |
-| Bind Vault itself to `0.0.0.0:8200` | No proxy needed | Exposes raw Vault API including all admin endpoints; violates the loopback-only design |
-| New narrowly-scoped gateway on a dedicated port | Only credential-issuance paths exposed; Vault stays loopback-only | Additional Nginx vhost to maintain |
-| SSH ProxyJump / tunneling | No gateway needed | Requires the bastion to already have SSH access — circular dependency |
+| Option                                          | Pros                                                              | Cons                                                                                   |
+|-------------------------------------------------|-------------------------------------------------------------------|----------------------------------------------------------------------------------------|
+| Widen existing Nginx proxy to `0.0.0.0:443`     | Minimal config change                                             | Exposes Vault UI, KV, PKI, sys/ — entire API surface to the network                    |
+| Bind Vault itself to `0.0.0.0:8200`             | No proxy needed                                                   | Exposes raw Vault API including all admin endpoints; violates the loopback-only design |
+| New narrowly-scoped gateway on a dedicated port | Only credential-issuance paths exposed; Vault stays loopback-only | Additional Nginx vhost to maintain                                                     |
+| SSH ProxyJump / tunneling                       | No gateway needed                                                 | Requires the bastion to already have SSH access — circular dependency                  |
 
 ## Decision
 
@@ -38,10 +38,10 @@ bastion IP, while Vault itself stays bound to `127.0.0.1:8200`
 
 ### What the gateway exposes
 
-| Path | Purpose | Vault Engine |
-| --- | --- | --- |
-| `/v1/ssh-otp/creds/` | Request a one-time password | `ssh-otp` |
-| `/v1/ssh-ca/sign/` | Request a signed SSH certificate | `ssh-ca` |
+| Path                 | Purpose                          | Vault Engine |
+|----------------------|----------------------------------|--------------|
+| `/v1/ssh-otp/creds/` | Request a one-time password      | `ssh-otp`    |
+| `/v1/ssh-ca/sign/`   | Request a signed SSH certificate | `ssh-ca`     |
 
 ### What the gateway blocks
 

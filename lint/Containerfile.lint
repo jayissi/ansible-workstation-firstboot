@@ -1,58 +1,45 @@
+# =============================================================================
+# Lint toolchain image -- Ansible Workstation Firstboot
+# =============================================================================
+# Provides all 18 lint tools in a single Podman image.  The entry point
+# is lint/lint-all.sh, which handles auto-fix and verification.
+#
+# Usage:
+#   podman build -t ansible-workstation-lint -f lint/Containerfile.lint .
+#   podman run --rm -v "$PWD":/workspace:z ansible-workstation-lint
+# =============================================================================
 FROM registry.fedoraproject.org/fedora:44 AS base
 
-RUN dnf install -y python3 python3-pip make ansible-core ShellCheck \
+LABEL maintainer="jayissi" \
+      description="Lint toolchain for ansible-workstation-firstboot"
+
+# -- System packages (dnf) + Node tools (npm) --------------------------------
+RUN dnf install -y --setopt=install_weak_deps=False \
+        python3 python3-pip ansible-core ShellCheck \
         gitleaks hadolint selint shfmt libatomic nodejs npm && \
     npm install -g markdownlint-cli2 markdown-table-formatter && \
-    dnf clean all
+    dnf clean all && \
+    rm -rf /var/cache/dnf
 
 WORKDIR /workspace
 
-# Copy requirements files with distinct names to avoid basename collision
-# (both collections/ and roles/ have requirements.yml)
+# -- Dependency manifests (copied early for layer caching) --------------------
 COPY requirements-lint.txt ./
 COPY .gitignore ./
 COPY collections/requirements.yml ./collections-requirements.yml
 COPY roles/requirements.yml ./roles-requirements.yml
 
-# The lint venv lives OUTSIDE /workspace (at /opt/.venv), not inside
-# it. `make lint`'s auto-fix step bind-mounts the host checkout onto
-# /workspace to write fixes back (-v $(CURDIR):/workspace:z) -- if the
-# venv lived inside /workspace, that bind-mount would shadow it with
-# the host's OWN .venv/ (ansible-core only, per this project's
-# venv/lint separation), leaving the container with no lint tools at
-# all. Confirmed via runtime testing: "ruff: command not found" when
-# the venv was at /workspace/.venv and the bind-mount shadowed it.
+# -- Lint venv at /opt/.venv (outside /workspace, immune to bind-mounts) ------
 RUN python3 -m venv /opt/.venv && \
-    /opt/.venv/bin/python -m pip install --upgrade pip && \
-    /opt/.venv/bin/python -m pip install -r requirements-lint.txt && \
+    /opt/.venv/bin/python -m pip install --no-cache-dir --upgrade pip && \
+    /opt/.venv/bin/python -m pip install --no-cache-dir -r requirements-lint.txt && \
     . /opt/.venv/bin/activate && \
     ansible-galaxy collection install -r collections-requirements.yml --force && \
     ansible-galaxy role install -r roles-requirements.yml --force -p roles/
 
+# -- Project source (invalidates cache on any file change) --------------------
 COPY . .
 
 ENV YAMLLINT_CONFIG_FILE=lint/.yamllint.yml
 
-CMD ["bash", "-c", "\
-  . /opt/.venv/bin/activate && \
-  yamllint . && \
-  echo 'ci-lint-placeholder' > .vault_pass.txt && \
-  ansible-lint && \
-  ruff check . && \
-  pyright && \
-  pymarkdown --config lint/.pymarkdownlint.yml scan \
-    README.md CONTRIBUTING.md SECURITY.md docs/CHANGELOG.md docs/*.md docs/decisions/*.md && \
-  markdownlint-cli2 --config lint/.markdownlint-cli2.yaml && \
-  markdown-table-formatter --check README.md CONTRIBUTING.md SECURITY.md docs/*.md && \
-  linkbust README.md CONTRIBUTING.md SECURITY.md docs/CHANGELOG.md docs/*.md docs/decisions/*.md && \
-  codespell \
-    inventory/ playbooks/ roles/common/ roles/dns/ roles/avahi/ roles/vault/ roles/proxy/ roles/verification/ \
-    Makefile README.md CONTRIBUTING.md SECURITY.md docs/CHANGELOG.md pyproject.toml lint/ \
-    ansible.cfg requirements-lint.txt requirements-rpm.txt .github/ && \
-  bandit -r roles/common/ roles/dns/ roles/avahi/ roles/vault/ roles/proxy/ roles/verification/ playbooks/ && \
-  checkov --config-file lint/.checkov.yaml -d . && \
-  detect-secrets scan --baseline lint/.secrets.baseline && \
-  actionlint .github/workflows/*.yml && \
-  shellcheck roles/common/files/bin/* roles/common/files/bashrc.d/* lint/lint-fedora-native.sh && \
-  bash lint/lint-fedora-native.sh \
-"]
+CMD ["bash", "lint/lint-all.sh"]

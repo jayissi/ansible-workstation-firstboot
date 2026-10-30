@@ -31,11 +31,11 @@ natural extension of the existing infrastructure.
 
 ### Alternatives Considered
 
-| Option | Pros | Cons |
-| --- | --- | --- |
-| Userpass + TOTP MFA fallback | Familiar UX, software-only | Password-based auth surface; TOTP seeds are copyable (no hardware binding); TPM2 already provides physical-presence guarantee, making TOTP redundant |
-| Direct VaultPass token grab from filesystem | Simple implementation | No audit trail for token acquisition; token scope hard to limit; token lifetime uncontrolled; no client_id binding |
-| Vault OIDC Identity Provider for VaultPass | Scoped, auditable, time-limited tokens; explicit client_id binding; standard browser flow | Additional Vault configuration; requires OIDC discovery endpoint availability |
+| Option                                      | Pros                                                                                      | Cons                                                                                                                                                 |
+|---------------------------------------------|-------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Userpass + TOTP MFA fallback                | Familiar UX, software-only                                                                | Password-based auth surface; TOTP seeds are copyable (no hardware binding); TPM2 already provides physical-presence guarantee, making TOTP redundant |
+| Direct VaultPass token grab from filesystem | Simple implementation                                                                     | No audit trail for token acquisition; token scope hard to limit; token lifetime uncontrolled; no client_id binding                                   |
+| Vault OIDC Identity Provider for VaultPass  | Scoped, auditable, time-limited tokens; explicit client_id binding; standard browser flow | Additional Vault configuration; requires OIDC discovery endpoint availability                                                                        |
 
 ## Decision
 
@@ -87,10 +87,10 @@ role:
 To support TLS client cert auth alongside automated agent operations,
 Vault Agent policies are split into two scopes:
 
-| Policy | Scope |
-| --- | --- |
-| `vault-agent-tls` | Certificate renewal operations (PKI issue/renew) |
-| `vault-agent-auth` | AppRole authentication and token management |
+| Policy             | Scope                                            |
+|--------------------|--------------------------------------------------|
+| `vault-agent-tls`  | Certificate renewal operations (PKI issue/renew) |
+| `vault-agent-auth` | AppRole authentication and token management      |
 
 This separation ensures that a compromised agent token from one scope
 cannot access the other's capabilities.

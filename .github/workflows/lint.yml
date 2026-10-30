@@ -134,7 +134,7 @@ jobs:
       - run: gitleaks detect --source . -c lint/.gitleaks.toml -v --redact --no-git
       - run: hadolint --config lint/.hadolint.yaml lint/Containerfile.lint
       - run: selint -r roles/auth/files/selinux/ roles/dns/files/selinux/ roles/vault/files/selinux/
-      - run: shfmt -d roles/common/files/bin/* roles/common/files/bashrc.d/* lint/lint-fedora-native.sh
+      - run: shfmt -d roles/common/files/bin/* roles/common/files/bashrc.d/* lint/lint-all.sh
 
   shell:
     name: Shell Lint
@@ -142,7 +142,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - run: shellcheck roles/common/files/bin/* roles/common/files/bashrc.d/* lint/lint-fedora-native.sh
+      - run: shellcheck roles/common/files/bin/* roles/common/files/bashrc.d/* lint/lint-all.sh
 
   spelling:
     name: Spelling

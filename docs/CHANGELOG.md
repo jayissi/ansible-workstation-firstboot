@@ -28,10 +28,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Removed the standalone `lint-fix` Makefile target; its auto-fix
-  recipe (ruff + markdown-table-formatter) is now inlined directly
-  into `lint`, which always auto-fixes then runs the full verify
-  suite in one step. CI remains verify-only and never auto-fixes
+- Refactored lint infrastructure: extracted the 18-tool lint chain
+  from the Containerfile's inline CMD into `lint/lint-all.sh` (single
+  entry point, shared constants for file lists, `run_linter` wrapper
+  that runs all tools and reports a pass/fail summary instead of
+  stopping at the first failure). `make lint` is now one `podman
+  build` + one `podman run` instead of two of each. Deleted
+  `lint/lint-fedora-native.sh` (absorbed into `lint-all.sh`).
+  Makefile refactored with venv guards, path variables, and explicit
+  activation. Containerfile slimmed with `--setopt=install_weak_deps=False`,
+  `--no-cache-dir`, and `LABEL` metadata
 
 ## [0.2.0] - 2026-10-30
 

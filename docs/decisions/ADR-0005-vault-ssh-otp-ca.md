@@ -42,12 +42,12 @@ Key technical constraints discovered during planning:
 
 ### Alternatives Considered
 
-| Option | Pros | Cons |
-| --- | --- | --- |
-| OTP only | Zero persistence, per-session credentials, simple | No fallback if Vault is unreachable at SSH-time |
-| CA signed certs only | sshd validates locally, Vault-independent at SSH-time | Certificates persist on disk until expiry; no per-session guarantee |
-| Static SSH key (status quo) | Simple, proven | Permanent credential, no rotation, no audit trail |
-| FIDO2/U2F (`pam_u2f`) | Hardware-bound, phishing-resistant | Requires physical token; placeholder added (`auth_pam_u2f_enabled: false`) for future work |
+| Option                      | Pros                                                  | Cons                                                                                       |
+|-----------------------------|-------------------------------------------------------|--------------------------------------------------------------------------------------------|
+| OTP only                    | Zero persistence, per-session credentials, simple     | No fallback if Vault is unreachable at SSH-time                                            |
+| CA signed certs only        | sshd validates locally, Vault-independent at SSH-time | Certificates persist on disk until expiry; no per-session guarantee                        |
+| Static SSH key (status quo) | Simple, proven                                        | Permanent credential, no rotation, no audit trail                                          |
+| FIDO2/U2F (`pam_u2f`)       | Hardware-bound, phishing-resistant                    | Requires physical token; placeholder added (`auth_pam_u2f_enabled: false`) for future work |
 
 ## Decision
 

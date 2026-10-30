@@ -39,13 +39,13 @@ domain, with `gen_tunable` booleans for optional network access:
 
 Custom file context types:
 
-| Type | Path | Purpose |
-| --- | --- | --- |
-| `vault_exec_t` | `/usr/bin/vault` | Binary entrypoint |
-| `vault_conf_t` | `/etc/vault.d/` | Configuration and TLS certificates |
-| `vault_sys_content_t` | `/opt/vault/` | Raft data, agent runtime, SELinux sources |
-| `vault_log_t` | `/var/log/vault/` | Audit and operational logs |
-| `vault_cluster_port_t` | TCP 8201 | Cluster communication port |
+| Type                   | Path              | Purpose                                   |
+|------------------------|-------------------|-------------------------------------------|
+| `vault_exec_t`         | `/usr/bin/vault`  | Binary entrypoint                         |
+| `vault_conf_t`         | `/etc/vault.d/`   | Configuration and TLS certificates        |
+| `vault_sys_content_t`  | `/opt/vault/`     | Raft data, agent runtime, SELinux sources |
+| `vault_log_t`          | `/var/log/vault/` | Audit and operational logs                |
+| `vault_cluster_port_t` | TCP 8201          | Cluster communication port                |
 
 The module grants Vault Agent write access to `httpd_config_t`
 (`/etc/nginx/certs/`) for proxy certificate rotation, with the

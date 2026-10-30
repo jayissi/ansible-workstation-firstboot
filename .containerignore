@@ -7,3 +7,12 @@
 .ssh_config
 .vault_pass*
 inventory/group_vars/all/vault.yml
+
+# Vendored Galaxy content (mirrors .gitignore). The image installs its
+# own fresh copies via `ansible-galaxy collection/role install` in the
+# RUN step before `COPY . .` runs -- the host's local copies are never
+# read by the image and only bloat the build context (~55 MB here),
+# which gets re-hashed/re-sent on every `podman build` call.
+collections/ansible_collections/
+roles/linux-system-roles.*/
+roles/willshersystems.*/
