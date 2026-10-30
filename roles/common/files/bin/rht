@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+#
+# rht -- Launch a SOCKS-proxied Chrome + SSH session to RHT classroom
+#
+# Flow:
+#   1. Validates dependencies (google-chrome, ssh, SSH key)
+#   2. Creates a disposable Chrome profile directory
+#   3. Starts Chrome incognito with SOCKS5 proxy on 127.0.0.1:1080
+#   4. Opens an interactive SSH session (DynamicForward creates the SOCKS proxy)
+#   5. On exit: kills Chrome and cleans up all temp files
+#
+# NOTE: Chrome launches before the SSH tunnel is established, so the
+#       browser will show connection errors until the SSH session is up.
+#       This is expected -- just wait or refresh once connected.
+#
+# Dependencies: google-chrome, ssh
+# SSH config:   ~/.ssh/RHT_Classroom/config
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Globals
+# ---------------------------------------------------------------------------
+readonly KEY_FILE="${HOME}/.ssh/RHT_Classroom/rht_classroom.rsa"
+
+CHROME_PID=""
+CHROME_TMP_DIR=""
+
+# ---------------------------------------------------------------------------
+# Functions
+# ---------------------------------------------------------------------------
+check_dependencies() {
+	local cmd
+	for cmd in google-chrome ssh; do
+		command -v "${cmd}" &>/dev/null ||
+			{
+				echo "Error: ${cmd} not found in PATH" >&2
+				return 1
+			}
+	done
+
+	[[ -f "${KEY_FILE}" ]] ||
+		{
+			echo "Error: SSH key not found: ${KEY_FILE}" >&2
+			return 1
+		}
+}
+
+cleanup() {
+	if [[ -n "${CHROME_PID}" ]]; then
+		kill -TERM "${CHROME_PID}" 2>/dev/null || true
+		wait "${CHROME_PID}" 2>/dev/null || true
+	fi
+
+	find /tmp -maxdepth 1 -type d -name ".com.google.Chrome.*" \
+		-exec rm -rf {} + 2>/dev/null || true
+
+	if [[ -d "${CHROME_TMP_DIR:-}" ]]; then
+		rm -rf "${CHROME_TMP_DIR}"
+	fi
+}
+
+launch_chrome() {
+	CHROME_TMP_DIR=$(mktemp -d)
+
+	google-chrome \
+		--incognito \
+		--user-data-dir="${CHROME_TMP_DIR}/" \
+		--proxy-server="socks5://127.0.0.1:1080" \
+		--host-resolver-rules="MAP * 0.0.0.0 , EXCLUDE localhost" \
+		--no-default-browser-check \
+		--no-first-run \
+		--disable-crash-reporter \
+		--disable-features=ChromeWhatsNewUI,AutofillServerCommunication \
+		http://classroom.example.com \
+		>/dev/null 2>&1 &
+	disown
+
+	CHROME_PID=$!
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+main() {
+	check_dependencies
+	trap cleanup EXIT
+	launch_chrome
+	ssh rht
+}
+
+main "$@"

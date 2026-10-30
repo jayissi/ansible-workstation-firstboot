@@ -1,0 +1,71 @@
+{{ ansible_managed | default('Ansible managed') | comment }}
+# dnsconfd configuration -- manages Unbound and resolv.conf
+# See dnsconfd.conf(5) for all options
+
+# DNSSEC validation -- match our unbound.conf setting
+dnssec_enabled: yes
+
+# Resolver listen address (0.0.0.0 when LAN DNS is enabled, loopback otherwise)
+listen_address: "{{ '0.0.0.0' if dns_lan_enabled | default(false) | bool else '127.0.0.1' }}"
+
+# resolv.conf options
+resolver_options: "edns0 trust-ad"
+
+# CA bundle for DoT upstream verification
+certification_authority: "{{ __dns_tls_cert_bundle }}"
+
+# Wired interfaces get priority over wireless
+prioritize_wire: yes
+
+# Logging
+stderr_log: yes
+syslog_log: yes
+
+# ---------------------------------------------------------------------------
+# Static upstream DoT servers (8 servers, 3 providers)
+# Order: Quad9 (threat intel) -> Cloudflare (malware filter) -> Google (fallback)
+# ---------------------------------------------------------------------------
+static_servers:
+  # Quad9 -- threat intelligence from 25+ feeds, Swiss jurisdiction, no logging
+  - address: "9.9.9.9"
+    protocol: "dns+tls"
+    name: "dns.quad9.net"
+    dnssec: true
+  - address: "149.112.112.112"
+    protocol: "dns+tls"
+    name: "dns.quad9.net"
+    dnssec: true
+  # Quad9 + ECS -- threat blocking with EDNS Client Subnet
+  - address: "9.9.9.11"
+    protocol: "dns+tls"
+    name: "dns.quad9.net"
+    dnssec: true
+  - address: "149.112.112.11"
+    protocol: "dns+tls"
+    name: "dns.quad9.net"
+    dnssec: true
+  # Cloudflare -- malware-filtering variant
+  - address: "1.1.1.2"
+    protocol: "dns+tls"
+    name: "cloudflare-dns.com"
+    dnssec: true
+  - address: "1.0.0.2"
+    protocol: "dns+tls"
+    name: "cloudflare-dns.com"
+    dnssec: true
+  # Google -- broad DNSSEC coverage (last-resort fallback)
+  - address: "8.8.8.8"
+    protocol: "dns+tls"
+    name: "dns.google"
+    dnssec: true
+  - address: "8.8.4.4"
+    protocol: "dns+tls"
+    name: "dns.google"
+    dnssec: true
+
+# RPZ is configured in Unbound conf.d directly, not here (see ADR-0004)
+
+# ---------------------------------------------------------------------------
+# Include additional configuration (VPN split-DNS, etc.)
+# ---------------------------------------------------------------------------
+# include: /etc/dnsconfd/conf.d/

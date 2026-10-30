@@ -1,0 +1,9 @@
+.venv/
+.git/
+.ruff_cache/
+.mypy_cache/
+*.pdf
+*ed25519*
+.ssh_config
+.vault_pass*
+inventory/group_vars/all/vault.yml

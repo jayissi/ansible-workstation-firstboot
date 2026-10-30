@@ -1,0 +1,297 @@
+---
+# roles/vault/tasks/init.yml
+# Initialize Vault, unseal, age-encrypt unseal keys, bind to TPM2
+
+- name: Init | Enable and start Vault service
+  ansible.builtin.systemd:
+    name: vault
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Init | Wait for Vault to be responsive
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/health"
+    validate_certs: false
+    status_code:
+      - 200
+      - 429
+      - 472
+      - 473
+      - 501
+      - 503
+  register: vault_health
+  until: vault_health.status | default(-1) in [200, 429, 472, 473, 501, 503]
+  retries: 30
+  delay: 2
+
+- name: Init | Unseal Vault if already initialized and sealed
+  ansible.builtin.command:
+    cmd: /usr/local/bin/vault-auto-unseal
+  environment:
+    VAULT_ADDR: "{{ vault_addr }}"
+  changed_when: true
+  when:
+    - vault_health.json.initialized | default(false)
+    - vault_health.json.sealed | default(false)
+
+- name: Init | Check if Vault is already initialized
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/init"
+    validate_certs: false
+  register: vault_init_status
+
+- name: Init | Initialize Vault
+  ansible.builtin.command:
+    cmd: >-
+      vault operator init
+      -key-shares={{ vault_key_shares }}
+      -key-threshold={{ vault_key_threshold }}
+      -format=json
+  environment:
+    VAULT_ADDR: "{{ vault_addr }}"
+    VAULT_CACERT: "{{ vault_tls_cert_file }}"
+  register: vault_init_output
+  changed_when: vault_init_output.rc == 0
+  when: not vault_init_status.json.initialized
+  no_log: true
+
+- name: Init | Process Vault init output
+  when: vault_init_output is changed  # noqa: no-handler
+  block:
+    - name: Init | Parse init output
+      ansible.builtin.set_fact:
+        vault_init_parsed: "{{ vault_init_output.stdout | from_json }}"
+      no_log: true
+
+    - name: Init | Generate age key pair for unseal key encryption
+      ansible.builtin.command:
+        cmd: age-keygen
+      register: vault_age_keygen
+      changed_when: true
+      no_log: true
+
+    - name: Init | Write age identity file
+      ansible.builtin.copy:
+        content: "{{ vault_age_keygen.stdout }}\n"
+        dest: "{{ vault_age_identity_file }}"
+        owner: root
+        group: root
+        mode: "0400"
+      no_log: true
+
+    - name: Init | Extract age public key for recipients
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          grep '^age1' "{{ vault_age_identity_file }}" || \
+            age-keygen -y "{{ vault_age_identity_file }}"
+      register: vault_age_pubkey
+      changed_when: false
+      no_log: true
+
+    - name: Init | Write age recipients file
+      ansible.builtin.copy:
+        content: "{{ vault_age_pubkey.stdout }}\n"
+        dest: "{{ vault_age_recipients_file }}"
+        owner: root
+        group: root
+        mode: "0444"
+
+    - name: Init | Age-encrypt unseal keys
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          printf '%s\n' {{ vault_init_parsed.unseal_keys_b64 | join(' ') }} | \
+            age -e -R "{{ vault_age_recipients_file }}" \
+            -o "{{ vault_unseal_keys_file }}"
+      changed_when: true
+      no_log: true
+
+    - name: Init | Set permissions on encrypted unseal keys
+      ansible.builtin.file:
+        path: "{{ vault_unseal_keys_file }}"
+        owner: root
+        group: root
+        mode: "0400"
+
+    - name: Init | Create credstore directory
+      ansible.builtin.file:
+        path: /etc/credstore.encrypted
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Init | Protect age identity with systemd-creds TPM2
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          systemd-creds encrypt \
+            --with-key=tpm2 \
+            --name=vault-age-identity \
+            "{{ vault_age_identity_file }}" \
+            /etc/credstore.encrypted/vault-age-identity.cred
+          shred -u "{{ vault_age_identity_file }}"
+      changed_when: true
+      when: vault_use_tpm2
+      no_log: true
+
+    - name: Init | Redeploy unseal service with TPM2 credential
+      ansible.builtin.template:
+        src: vault-unseal.service.j2
+        dest: /etc/systemd/system/vault-unseal.service
+        owner: root
+        group: root
+        mode: "0644"
+      vars:
+        vault_tpm2_credential_exists: true
+      when: vault_use_tpm2
+
+    - name: Init | Enable vault-unseal service
+      ansible.builtin.systemd:
+        name: vault-unseal
+        enabled: true
+        daemon_reload: true
+
+    - name: Init | Save root token temporarily for unseal
+      ansible.builtin.copy:
+        content: "{{ vault_init_parsed.root_token }}\n"
+        dest: /root/.vault-root-token
+        owner: root
+        group: root
+        mode: "0400"
+      no_log: true
+
+    - name: Init | Age-encrypt root token (recipient key)
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          age -e -R "{{ vault_age_recipients_file }}" \
+            -o /root/.vault-root-token.age \
+            /root/.vault-root-token
+          chmod 0400 /root/.vault-root-token.age
+      changed_when: true
+      no_log: true
+
+    - name: Init | Create passphrase-encrypted root token backup (DR)
+      ansible.builtin.expect:
+        command: >-
+          age -e -p
+          -o /root/.vault-root-token.age.pass
+          /root/.vault-root-token
+        responses:
+          "[Ee]nter passphrase": "{{ vault_admin_passphrase }}"
+          "[Cc]onfirm passphrase": "{{ vault_admin_passphrase }}"
+        timeout: 30
+      changed_when: true
+      no_log: true
+      when: vault_admin_passphrase is defined and vault_admin_passphrase | length > 0
+
+    - name: Init | Set permissions on passphrase backup
+      ansible.builtin.file:
+        path: /root/.vault-root-token.age.pass
+        owner: root
+        group: root
+        mode: "0400"
+      when: vault_admin_passphrase is defined and vault_admin_passphrase | length > 0
+
+    - name: Init | Unseal Vault with threshold keys
+      ansible.builtin.command:
+        cmd: "vault operator unseal {{ item }}"
+      environment:
+        VAULT_ADDR: "{{ vault_addr }}"
+        VAULT_CACERT: "{{ vault_tls_cert_file }}"
+      loop: "{{ vault_init_parsed.unseal_keys_b64[:vault_key_threshold] }}"
+      changed_when: true
+      no_log: true
+
+    - name: Init | Verify Vault is unsealed
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/sys/health"
+        validate_certs: false
+        status_code:
+          - 200
+      register: vault_unsealed_check
+
+# Root token re-read strategy: plaintext (first run) -> TPM2+age -> passphrase.
+# TPM2+age only succeeds when the calling SELinux domain can open
+# /dev/tpmrm0 (true for systemd-service contexts and unconfined_u admins,
+# but NOT for staff_u admins transitioned to sysadm_t -- confirmed via
+# runtime testing: "Failed to open specified TCTI device file /dev/tpmrm0:
+# Permission denied"). The passphrase fallback lets Ansible-driven re-reads
+# (needed every run to gate pki_engine.yml/tls_production.yml) succeed
+# regardless of the admin's SELinux login mapping, without granting sysadm_t
+# broader TPM2 device access.
+- name: Init | Attempt plaintext root token read (first run only)
+  ansible.builtin.slurp:
+    src: /root/.vault-root-token
+  register: _vault_token_plain
+  failed_when: false
+  no_log: true
+
+- name: Init | Attempt TPM2+age root token decrypt
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      systemd-creds decrypt --name=vault-age-identity \
+        /etc/credstore.encrypted/vault-age-identity.cred - | \
+        age -d -i - /root/.vault-root-token.age
+  register: _vault_token_tpm2
+  no_log: true
+  changed_when: false
+  failed_when: false
+  when: _vault_token_plain.content is not defined
+
+- name: Init | Attempt passphrase-based root token decrypt
+  ansible.builtin.expect:
+    command: >-
+      age -d -o /opt/vault/run/root-token-pass.tmp
+      /root/.vault-root-token.age.pass
+    responses:
+      "[Ee]nter passphrase": "{{ vault_admin_passphrase }}"
+    timeout: 15
+  no_log: true
+  changed_when: false
+  failed_when: false
+  when:
+    - _vault_token_plain.content is not defined
+    - (_vault_token_tpm2.stdout | default('')) | trim | length == 0
+    - vault_admin_passphrase is defined and vault_admin_passphrase | length > 0
+
+# age writes the decrypted token cleanly to a file (not stdout) so the
+# interactive passphrase prompt text and pty escape codes captured by
+# ansible.builtin.expect never get mixed into the actual secret value.
+- name: Init | Read passphrase-decrypted root token from temp file
+  ansible.builtin.slurp:
+    src: /opt/vault/run/root-token-pass.tmp
+  register: _vault_token_pass_file
+  failed_when: false
+  no_log: true
+
+- name: Init | Shred passphrase-decrypted temp file
+  ansible.builtin.shell:
+    cmd: >-
+      shred -u /opt/vault/run/root-token-pass.tmp 2>/dev/null ||
+      rm -f /opt/vault/run/root-token-pass.tmp
+  changed_when: false
+  failed_when: false
+
+- name: Init | Set root token fact
+  ansible.builtin.set_fact:
+    vault_root_token: >-
+      {{
+        [
+          (_vault_token_plain.content | b64decode | trim) if _vault_token_plain.content is defined else '',
+          (_vault_token_tpm2.stdout | default('')) | trim,
+          (_vault_token_pass_file.content | b64decode | trim) if _vault_token_pass_file.content is defined else ''
+        ] | select('truthy') | first | default('')
+      }}
+  no_log: true
+
+- name: Init | Shred plaintext root token if age-encrypted copy exists
+  ansible.builtin.shell:
+    cmd: |
+      [ -f /root/.vault-root-token.age ] && [ -f /root/.vault-root-token ] && \
+        shred -u /root/.vault-root-token || true
+  changed_when: false

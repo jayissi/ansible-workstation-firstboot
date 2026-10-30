@@ -1,0 +1,172 @@
+---
+# ---------------------------------------------------------------------------
+# DNS resolver (Unbound -- local caching with DNSSEC + DoT)
+# ---------------------------------------------------------------------------
+
+# Protocol support
+dns_do_ip4: true
+dns_do_ip6: true
+dns_do_tcp: true
+dns_do_udp: true
+
+# Access control (who can query)
+dns_access_control:
+  - subnet: '127.0.0.0/8'
+    action: 'allow'
+  - subnet: '::1/128'
+    action: 'allow'
+
+# Do not query localhost for upstream (prevents loops)
+dns_do_not_query_localhost: true
+
+# ---------------------------------------------------------------------------
+# Upstream DNS -- managed by dnsconfd
+# ---------------------------------------------------------------------------
+# DoT upstream servers are configured in /etc/dnsconfd/dnsconfd.conf
+# (static_servers section), not here. dnsconfd pushes them to Unbound
+# via unbound-control at runtime.
+
+# ---------------------------------------------------------------------------
+# Local data (resolved without contacting upstream)
+# ---------------------------------------------------------------------------
+
+dns_local_zones: []
+
+dns_local_data:
+  - name: 'vault.local'
+    type: 'A'
+    value: '127.0.0.1'
+
+dns_local_data_ptr:
+  - ip: '127.0.0.1'
+    name: 'vault.local'
+
+# Domains that should never be forwarded upstream
+dns_private_domains:
+  - 'local'
+
+# RFC1918 rebinding protection -- refuse these from upstream answers
+dns_private_addresses:
+  - '10.0.0.0/8'
+  - '172.16.0.0/12'
+  - '192.168.0.0/16'
+  - '169.254.0.0/16'
+  - 'fd00::/8'
+  - 'fe80::/10'
+
+# Domains where DNSSEC validation is skipped
+dns_insecure_domains: []
+
+# ---------------------------------------------------------------------------
+# DNSSEC
+# ---------------------------------------------------------------------------
+dns_dnssec_enabled: true
+
+# Log DNSSEC validation failures (level 2 = log why validation failed)
+dns_val_log_level: 2
+
+# ---------------------------------------------------------------------------
+# Security hardening
+# ---------------------------------------------------------------------------
+dns_hide_identity: true
+dns_hide_version: true
+dns_harden_glue: true
+dns_harden_dnssec_stripped: true
+dns_harden_below_nxdomain: true
+dns_harden_large_queries: true
+dns_harden_algo_downgrade: true
+dns_use_caps_for_id: true
+dns_val_clean_additional: true
+dns_unwanted_reply_threshold: 10000
+
+# ---------------------------------------------------------------------------
+# Privacy
+# ---------------------------------------------------------------------------
+dns_qname_minimisation: true
+dns_qname_minimisation_strict: false
+dns_aggressive_nsec: true
+
+# ---------------------------------------------------------------------------
+# Performance / cache
+# ---------------------------------------------------------------------------
+# 0 = auto-detect from CPU count
+dns_num_threads: 0
+
+dns_msg_cache_size: '64m'
+dns_rrset_cache_size: '128m'
+dns_key_cache_size: '32m'
+dns_neg_cache_size: '16m'
+
+dns_cache_min_ttl: 300
+dns_cache_max_ttl: 86400
+
+dns_prefetch: true
+dns_prefetch_key: true
+
+# Serve stale cache entries while refreshing (availability during upstream outage)
+dns_serve_expired: true
+dns_serve_expired_ttl: 86400
+
+dns_rrset_roundrobin: true
+dns_minimal_responses: true
+dns_edns_buffer_size: 1232
+
+# ---------------------------------------------------------------------------
+# Root hints auto-update (weekly systemd timer)
+# ---------------------------------------------------------------------------
+dns_root_hints_update_enabled: true
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+dns_verbosity: 1
+dns_log_queries: false
+dns_log_replies: false
+dns_use_syslog: true
+
+# ---------------------------------------------------------------------------
+# DoH bypass prevention
+# ---------------------------------------------------------------------------
+# Block Firefox DoH canary domain (tells Firefox to respect local DNS)
+dns_block_doh_canary: true
+
+# ---------------------------------------------------------------------------
+# Blocklist (DNS-level ad/malware/phishing blocking)
+# ---------------------------------------------------------------------------
+dns_blocklist_enabled: true
+
+# Base blocklists (always included when dns_blocklist_enabled is true)
+dns_blocklist_urls:
+  - 'https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts'
+  - 'https://urlhaus.abuse.ch/downloads/hostfile/'
+
+# Additional blocklists (customer-managed, additive)
+# Uncomment entries for more aggressive blocking:
+dns_additional_blocklist_urls: []
+  # - 'https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/hosts/pro.txt'
+  # - 'https://phishing.army/download/phishing_army_blocklist.txt'
+  # - 'https://small.oisd.nl/domainswild'
+
+dns_blocklist_schedule: '*-*-* 04:00:00'
+
+# ---------------------------------------------------------------------------
+# RPZ (Response Policy Zones) -- DNS-level blocking via Unbound-native fetch
+# ---------------------------------------------------------------------------
+dns_rpz_enabled: true
+
+# ---------------------------------------------------------------------------
+# LAN DNS caching (feature-flagged, default off)
+# ---------------------------------------------------------------------------
+dns_lan_enabled: false
+dns_lan_subnet: "192.168.122.0/24"
+dns_lan_interface: ""
+
+# ---------------------------------------------------------------------------
+# SELinux policy compilation
+# ---------------------------------------------------------------------------
+dns_selinux_dir: /opt/dns-selinux
+
+# Sinkhole mode: 'always_nxdomain' returns NXDOMAIN (default, no webserver needed).
+# 'redirect' would redirect to a local IP (requires a block-page webserver).
+# Only 'always_nxdomain' is implemented; 'redirect' is a future enhancement.
+dns_blocklist_action: 'always_nxdomain'

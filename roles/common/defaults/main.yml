@@ -1,0 +1,19 @@
+---
+common_admin_user: jayissi
+common_admin_home: "/home/{{ common_admin_user }}"
+
+common_packages: []
+common_rpm_gpg_keys: []
+common_third_party_repos: []
+common_bin_utilities: []
+common_bashrc_files: []
+common_umask_value: "0027"
+common_luks_root_device: ""
+
+# Swap disable (physical hosts only -- Vault hardening)
+common_disable_swap: true
+
+common_sshd_banner: ""
+
+# System default target (graphical.target for GUI workstations)
+common_default_target: graphical.target

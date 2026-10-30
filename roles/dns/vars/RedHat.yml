@@ -1,0 +1,15 @@
+---
+__dns_packages:
+  - 'unbound'
+  - 'unbound-anchor'
+  - 'dnsconfd'
+  - 'dnsconfd-unbound'
+  - 'dnsconfd-selinux'
+
+__dns_service_name: 'unbound.service'
+__dns_user: 'unbound'
+__dns_group: 'unbound'
+
+__dns_root_key: '/var/lib/unbound/root.key'
+__dns_root_hints_file: '/var/lib/unbound/root.hints'
+__dns_tls_cert_bundle: '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem'

@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+# CIS RHEL 9 v3.0.0 5.3.3.2.x
+minlen = {{ auth_pwquality_minlen }}
+minclass = {{ auth_pwquality_minclass }}
+maxrepeat = {{ auth_pwquality_maxrepeat }}
+maxsequence = {{ auth_pwquality_maxsequence }}
+dictcheck = {{ auth_pwquality_dictcheck }}
+gecoscheck = 1
+enforcing = 1
+retry = {{ auth_pwquality_retry }}

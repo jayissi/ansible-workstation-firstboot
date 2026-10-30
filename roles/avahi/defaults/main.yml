@@ -1,0 +1,98 @@
+---
+# ---------------------------------------------------------------------------
+# Avahi mDNS/DNS-SD (hardened for security workstation)
+# ---------------------------------------------------------------------------
+
+# Hostname to publish via mDNS (empty = system hostname)
+avahi_hostname: ''
+
+# Domain name for mDNS
+avahi_domain_name: 'local'
+
+# Additional browse domains
+avahi_browse_domains: []
+
+# ---------------------------------------------------------------------------
+# Network
+# ---------------------------------------------------------------------------
+avahi_use_ipv4: true
+avahi_use_ipv6: true
+
+# Interface filtering (empty = all non-loopback interfaces)
+avahi_allow_interfaces: []
+avahi_deny_interfaces: []
+
+# Maximum DNS cache entries per interface
+avahi_cache_entries_max: 4096
+
+# Per-interface packet rate limiting
+avahi_ratelimit_interval_usec: 1000000
+avahi_ratelimit_burst: 1000
+
+# Allow mDNS on point-to-point interfaces (e.g. VPN tunnels)
+avahi_allow_point_to_point: false
+
+# Prevent other mDNS stacks from running (exclusively bind UDP 5353)
+avahi_disallow_other_stacks: false
+
+# Disable chroot -- SELinux avahi_t provides confinement; chroot
+# conflicts with symlink following and SELinux domain transitions.
+avahi_use_chroot: false
+
+# ---------------------------------------------------------------------------
+# D-Bus (required for GNOME printer/file discovery)
+# ---------------------------------------------------------------------------
+avahi_enable_dbus: true
+
+# ---------------------------------------------------------------------------
+# Wide area (unicast DNS-SD -- disabled for security)
+# ---------------------------------------------------------------------------
+avahi_enable_wide_area: false
+
+# ---------------------------------------------------------------------------
+# Publishing (hardened: only address records, block user services)
+# ---------------------------------------------------------------------------
+
+# Disable all record publishing (false = publish address records)
+avahi_disable_publishing: false
+
+# Block unprivileged users from advertising services via D-Bus
+avahi_disable_user_service_publishing: true
+
+# Publish IP address records for all local interfaces
+avahi_publish_addresses: true
+
+# Publish HINFO record with OS and CPU info (privacy concern -- disabled)
+avahi_publish_hinfo: false
+
+# Publish _workstation._tcp service (disabled -- unnecessary exposure)
+avahi_publish_workstation: false
+
+# Announce local domain name for browsing by other hosts
+avahi_publish_domain: true
+
+# Publish IPv6 AAAA records via IPv4 transport
+avahi_publish_aaaa_on_ipv4: true
+
+# Publish IPv4 A records via IPv6 transport
+avahi_publish_a_on_ipv6: false
+
+# ---------------------------------------------------------------------------
+# Reflector (disabled -- no cross-interface mDNS forwarding)
+# ---------------------------------------------------------------------------
+avahi_enable_reflector: false
+avahi_reflect_ipv: false
+
+# ---------------------------------------------------------------------------
+# Resource limits (containment -- prevent core dumps and file creation)
+# ---------------------------------------------------------------------------
+avahi_rlimit_core: 0
+avahi_rlimit_data: 8388608
+avahi_rlimit_fsize: 0
+avahi_rlimit_nofile: 768
+avahi_rlimit_stack: 8388608
+
+# ---------------------------------------------------------------------------
+# NSS-mDNS (.local hostname resolution via nsswitch)
+# ---------------------------------------------------------------------------
+avahi_nss_mdns_enabled: true

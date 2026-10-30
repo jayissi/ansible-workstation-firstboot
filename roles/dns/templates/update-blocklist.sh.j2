@@ -1,0 +1,31 @@
+#!/bin/bash
+{{ ansible_managed | default('Ansible managed') | comment }}
+
+set -euo pipefail
+
+BLOCKLIST_FILE="/etc/unbound/conf.d/50-blocklist.conf"
+TEMP_FILE=$(mktemp)
+
+echo "# Unbound blocklist - auto-generated" > "$TEMP_FILE"
+echo "# Updated: $(date)" >> "$TEMP_FILE"
+echo "" >> "$TEMP_FILE"
+
+{% for url in dns_blocklist_urls + dns_additional_blocklist_urls %}
+echo "Downloading blocklist from: {{ url }}"
+curl -sS "{{ url }}" | \
+    grep -E '^0\.0\.0\.0' | \
+    awk '$2 !~ /^(0\.0\.0\.0|127\.0\.0\.1|255\.255\.255\.255|::1|localhost)$/ {print "local-zone: \""$2"\" {{ dns_blocklist_action }}"}' >> "$TEMP_FILE" || true
+
+{% endfor %}
+
+# Count entries
+ENTRIES=$(grep -c 'local-zone' "$TEMP_FILE" || echo "0")
+echo "Total blocklist entries: $ENTRIES"
+
+# Move to final location with correct ownership and SELinux context
+mv "$TEMP_FILE" "$BLOCKLIST_FILE"
+chown root:{{ __dns_group }} "$BLOCKLIST_FILE"
+chmod 0640 "$BLOCKLIST_FILE"
+restorecon -F "$BLOCKLIST_FILE" 2>/dev/null || true
+
+echo "Blocklist updated successfully"

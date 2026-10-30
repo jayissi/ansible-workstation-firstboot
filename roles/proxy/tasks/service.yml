@@ -1,0 +1,14 @@
+---
+- name: Service | Enable and start Nginx
+  ansible.builtin.systemd_service:
+    name: '{{ __proxy_service_name }}'
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Service | Enable cert rotation watcher
+  ansible.builtin.systemd_service:
+    name: nginx-cert-reload.path
+    enabled: true
+    state: started
+    daemon_reload: true

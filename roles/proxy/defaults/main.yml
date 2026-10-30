@@ -1,0 +1,27 @@
+---
+# ---------------------------------------------------------------------------
+# Nginx reverse proxy for Vault UI (https://vault.local)
+# ---------------------------------------------------------------------------
+proxy_listen_address: '127.0.0.1'
+proxy_listen_port: 443
+proxy_server_name: vault.local
+
+proxy_backend_url: 'https://127.0.0.1:8200'
+proxy_vault_addr: 'https://127.0.0.1:8200'
+proxy_vault_token: "{{ vault_root_token | default('') }}"
+proxy_leaf_ttl: '2160h'
+
+# Nginx has its OWN leaf cert (vault.local SAN only), separate from Vault's.
+# Issued by the same Vault PKI Intermediate CA, auto-rotated by Vault Agent.
+proxy_tls_cert: /etc/nginx/certs/server-chain.crt
+proxy_tls_key: /etc/nginx/certs/server.key
+proxy_tls_ca: /etc/nginx/certs/root.crt
+proxy_tls_protocols: 'TLSv1.2 TLSv1.3'
+
+# ---------------------------------------------------------------------------
+# SSH credential gateway -- narrowly-scoped Nginx vhost exposing ONLY
+# the ssh-otp/creds and ssh-ca/sign paths for bastion use.
+# ---------------------------------------------------------------------------
+proxy_ssh_gateway_enabled: true
+proxy_ssh_gateway_listen_address: '0.0.0.0'
+proxy_ssh_gateway_port: 8443

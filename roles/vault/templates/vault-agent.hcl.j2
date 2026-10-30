@@ -1,0 +1,43 @@
+# {{ ansible_managed }}
+# Vault Agent configuration for automatic certificate rotation
+
+vault {
+  address = "{{ vault_addr }}"
+  tls_skip_verify = false
+  ca_cert = "{{ vault_cert_dir }}/root.crt"
+}
+
+auto_auth {
+  method "approle" {
+    config = {
+      role_id_file_path   = "{{ vault_config_dir }}/agent-role-id"
+      secret_id_file_path = "{{ vault_agent_run_dir }}/agent-secret-id"
+      remove_secret_id_file_after_reading = true
+    }
+  }
+
+}
+
+# Single template block: cert, CA, and key all come from the SAME
+# pkiCert "issue" call, then get split into separate files by the
+# command hook. Two independent template blocks would each trigger
+# their own pki_int/issue request, producing an unpaired/mismatched
+# cert+key (confirmed by runtime failure: "tls: private key does not
+# match public key").
+template {
+  source      = "{{ vault_config_dir }}/templates/leaf-combined.tpl"
+  destination = "{{ vault_agent_run_dir }}/leaf-combined.tmp"
+  perms       = 0400
+  command     = "/usr/local/bin/vault-agent-split-cert"
+}
+
+# Separate leaf cert for Nginx reverse proxy (vault.local only).
+# Uses the same single-pkiCert pattern as above: one issue call, split
+# into cert + key by the command hook. Separate private key means
+# compromising Nginx does not compromise Vault's TLS identity.
+template {
+  source      = "{{ vault_config_dir }}/templates/proxy-combined.tpl"
+  destination = "{{ vault_agent_run_dir }}/proxy-combined.tmp"
+  perms       = 0400
+  command     = "/usr/local/bin/vault-agent-split-proxy-cert"
+}

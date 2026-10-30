@@ -1,0 +1,13 @@
+#!/bin/bash
+
+USBGUARD=$(command -v usbguard)
+AWK=$(command -v awk)
+XARGS=$(command -v xargs)
+
+# shellcheck disable=SC2016  # single quotes intentional: $1 is an AWK
+# field reference, not a shell variable -- double-quoting would break it.
+${USBGUARD} list-devices -b |
+	${AWK} -F : '{print $1}' |
+	${XARGS} "${USBGUARD}" allow-device
+
+unset USBGUARD AWK XARGS

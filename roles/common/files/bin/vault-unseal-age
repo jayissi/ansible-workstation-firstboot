@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+#
+# vault-unseal-age -- Manual Vault unseal using age passphrase
+#
+# Prompts for age passphrase to decrypt unseal keys, then pipes
+# them directly to vault operator unseal.
+#
+# Usage: vault-unseal-age [keys-file]
+
+set -euo pipefail
+
+# staff_u admins land in staff_t under plain "sudo", which SELinux blocks
+# from reading /root/vault-unseal-keys.age (admin_home_t). Transparently
+# re-exec into sysadm_t (the correct admin domain) instead of failing with
+# a confusing "permission denied" from age. See vault-admin for the same
+# pattern.
+_my_context=$(id -Z 2>/dev/null || true)
+if [[ "${_my_context}" == *":staff_r:staff_t:"* ]]; then
+	exec sudo -r sysadm_r -t sysadm_t "$0" "$@"
+fi
+
+readonly VAULT_ADDR="${VAULT_ADDR:-https://127.0.0.1:8200}"
+readonly UNSEAL_KEYS_FILE="${1:-/root/vault-unseal-keys.age}"
+readonly VAULT_CACERT="${VAULT_CACERT:-/etc/vault.d/certs/server-chain.crt}"
+
+export VAULT_ADDR VAULT_CACERT
+
+if [ ! -f "${UNSEAL_KEYS_FILE}" ]; then
+	echo "ERROR: Unseal keys file not found: ${UNSEAL_KEYS_FILE}" >&2
+	exit 1
+fi
+
+echo "Decrypting unseal keys with age passphrase..."
+age -d "${UNSEAL_KEYS_FILE}" | while IFS= read -r key; do
+	[ -z "${key}" ] && continue
+	result=$(vault operator unseal -format=json "${key}" 2>/dev/null) || continue
+	sealed=$(echo "${result}" | grep -o '"sealed":[a-z]*' | cut -d: -f2)
+	progress=$(echo "${result}" | grep -o '"progress":[0-9]*' | cut -d: -f2)
+	echo "Unseal progress: ${progress}/${result##*\"t\":}"
+	if [ "${sealed}" = "false" ]; then
+		echo "Vault successfully unsealed."
+		break
+	fi
+done

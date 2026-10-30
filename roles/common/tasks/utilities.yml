@@ -1,0 +1,38 @@
+---
+# Bin utilities, bashrc.d, and umask
+
+- name: Utilities | Deploy bin utilities to /usr/local/bin
+  ansible.builtin.copy:
+    src: "bin/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    owner: root
+    group: root
+    mode: "0750"
+  loop: "{{ common_bin_utilities }}"
+
+- name: Utilities | Ensure bashrc.d directory exists
+  ansible.builtin.file:
+    path: "{{ common_admin_home }}/.bashrc.d"
+    state: directory
+    owner: "{{ common_admin_user }}"
+    group: "{{ common_admin_user }}"
+    mode: "0750"
+
+- name: Utilities | Deploy bashrc.d files
+  ansible.builtin.copy:
+    src: "bashrc.d/{{ item }}"
+    dest: "{{ common_admin_home }}/.bashrc.d/{{ item }}"
+    owner: "{{ common_admin_user }}"
+    group: "{{ common_admin_user }}"
+    mode: "0640"
+  loop: "{{ common_bashrc_files }}"
+
+- name: Utilities | Set system-wide umask
+  ansible.builtin.copy:
+    dest: /etc/profile.d/umask.sh
+    content: |
+      # Set by ansible-workstation-firstboot
+      umask {{ common_umask_value }}
+    owner: root
+    group: root
+    mode: "0644"

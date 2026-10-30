@@ -1,0 +1,58 @@
+---
+# roles/auth/tasks/configure.yml
+# PAM hardening: faillock, pwquality, vault-ssh-helper config + PAM
+
+- name: Configure | Ensure faillock directory exists
+  ansible.builtin.file:
+    path: "{{ auth_faillock_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Configure | Deploy faillock configuration
+  ansible.builtin.template:
+    src: faillock.conf.j2
+    dest: /etc/security/faillock.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Configure | Deploy pwquality configuration
+  ansible.builtin.template:
+    src: pwquality.conf.j2
+    dest: /etc/security/pwquality.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Configure | Ensure vault-ssh-helper config directory exists
+  ansible.builtin.file:
+    path: /etc/vault-ssh-helper.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: auth_vault_ssh_helper_enabled | bool
+
+- name: Configure | Deploy vault-ssh-helper configuration
+  ansible.builtin.template:
+    src: vault-ssh-helper-config.hcl.j2
+    dest: /etc/vault-ssh-helper.d/config.hcl
+    owner: root
+    group: root
+    mode: "0644"
+  when: auth_vault_ssh_helper_enabled | bool
+
+- name: Configure | Deploy vault-ssh-helper PAM configuration
+  ansible.builtin.copy:
+    dest: /etc/pam.d/vault-ssh-helper
+    content: |
+      # Managed by ansible-workstation-firstboot (auth role)
+      # vault-ssh-helper OTP validation via pam_exec
+      auth requisite pam_exec.so quiet expose_authtok log=/var/log/vault-ssh-helper.log /usr/bin/vault-ssh-helper -config=/etc/vault-ssh-helper.d/config.hcl
+      auth optional pam_unix.so not_set_pass use_first_pass nodelay
+    owner: root
+    group: root
+    mode: "0644"
+  when: auth_vault_ssh_helper_enabled | bool

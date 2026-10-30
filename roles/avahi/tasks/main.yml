@@ -1,0 +1,34 @@
+---
+# roles/avahi/tasks/main.yml
+# Avahi mDNS/DNS-SD with hardened configuration
+
+- name: Load OS-specific variables
+  ansible.builtin.include_vars: '{{ item }}'
+  with_first_found:
+    - files:
+        - '{{ ansible_facts["distribution"] }}-{{ ansible_facts["distribution_major_version"] }}.yml'
+        - '{{ ansible_facts["os_family"] }}-{{ ansible_facts["distribution_major_version"] }}.yml'
+        - '{{ ansible_facts["distribution"] }}.yml'
+        - '{{ ansible_facts["os_family"] }}.yml'
+      paths:
+        - 'vars'
+  tags:
+    - always
+
+- name: Import install tasks
+  ansible.builtin.import_tasks: install.yml
+  tags:
+    - avahi
+    - avahi:install
+
+- name: Import configure tasks
+  ansible.builtin.import_tasks: configure.yml
+  tags:
+    - avahi
+    - avahi:configure
+
+- name: Import service tasks
+  ansible.builtin.import_tasks: service.yml
+  tags:
+    - avahi
+    - avahi:service

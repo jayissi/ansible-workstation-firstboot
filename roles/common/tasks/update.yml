@@ -1,0 +1,30 @@
+---
+# System update and firmware
+
+- name: Update | Full system update  # noqa: package-latest
+  ansible.builtin.dnf:
+    name: "*"
+    state: latest
+    update_cache: true
+
+- name: Update | Check if fwupd is available
+  ansible.builtin.command:
+    cmd: command -v fwupdmgr
+  register: common_fwupd_check
+  changed_when: false
+  failed_when: false
+
+- name: Update | Refresh firmware metadata
+  ansible.builtin.command:
+    cmd: fwupdmgr refresh --force
+  when: common_fwupd_check.rc == 0
+  changed_when: false
+  failed_when: false
+
+- name: Update | Update firmware
+  ansible.builtin.command:
+    cmd: fwupdmgr update --assume-yes
+  when: common_fwupd_check.rc == 0
+  register: common_firmware_update
+  changed_when: "'Successfully installed' in (common_firmware_update.stdout | default(''))"
+  failed_when: false

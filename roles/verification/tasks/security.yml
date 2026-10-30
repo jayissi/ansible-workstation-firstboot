@@ -1,0 +1,159 @@
+---
+# roles/verification/tasks/security.yml
+# System security posture: timesync, crypto, kernel, journal,
+# firewall, service state, SELinux, audit
+
+# ------------------------------------------------------------------
+# Timesync
+# ------------------------------------------------------------------
+- name: Security | Check chrony tracking
+  ansible.builtin.command:
+    cmd: chronyc tracking
+  register: verification_chrony
+  changed_when: false
+  failed_when: false
+
+- name: Security | Assert time synchronization
+  ansible.builtin.assert:
+    that: verification_chrony.rc == 0
+    quiet: true
+    success_msg: "PASS: Time synchronized"
+    fail_msg: "FAIL: Time not synchronized"
+
+# ------------------------------------------------------------------
+# Crypto policy
+# ------------------------------------------------------------------
+- name: Security | Get crypto policy
+  ansible.builtin.command:
+    cmd: update-crypto-policies --show
+  register: verification_crypto
+  changed_when: false
+
+- name: Security | Report crypto policy
+  ansible.builtin.debug:
+    msg: "INFO: Crypto policy is {{ verification_crypto.stdout | trim }}"
+
+# ------------------------------------------------------------------
+# Kernel parameters
+# ------------------------------------------------------------------
+- name: Security | Read dmesg_restrict
+  ansible.builtin.slurp:
+    src: /proc/sys/kernel/dmesg_restrict
+  register: verification_dmesg
+
+- name: Security | Assert dmesg_restrict
+  ansible.builtin.assert:
+    that: (verification_dmesg.content | b64decode | trim) == "1"
+    quiet: true
+    success_msg: "PASS: dmesg_restrict enabled"
+    fail_msg: "FAIL: dmesg_restrict not enabled"
+
+# ------------------------------------------------------------------
+# Journal persistence
+# ------------------------------------------------------------------
+- name: Security | Check journal directory
+  ansible.builtin.stat:
+    path: /var/log/journal
+  register: verification_journal
+
+- name: Security | Assert persistent journal
+  ansible.builtin.assert:
+    that: verification_journal.stat.exists and verification_journal.stat.isdir
+    quiet: true
+    success_msg: "PASS: Persistent journal active"
+    fail_msg: "FAIL: Persistent journal not found"
+
+# ------------------------------------------------------------------
+# Firewall
+# ------------------------------------------------------------------
+- name: Security | Get firewall rules
+  ansible.builtin.command:
+    cmd: firewall-cmd --list-all --zone=FedoraWorkstation
+  register: verification_fw
+  changed_when: false
+
+- name: Security | Assert ICMP blocks
+  ansible.builtin.assert:
+    that: "'echo-request' in verification_fw.stdout"
+    quiet: true
+    success_msg: "PASS: ICMP echo-request blocked"
+    fail_msg: "FAIL: ICMP blocks missing"
+
+# ------------------------------------------------------------------
+# Masked services (using service_facts)
+# ------------------------------------------------------------------
+- name: Security | Assert services are masked
+  ansible.builtin.assert:
+    that: >-
+      ansible_facts.services[item] is defined and
+      ansible_facts.services[item].status == 'masked'
+    quiet: true
+    success_msg: "PASS: {{ item }} is masked"
+    fail_msg: "WARN: {{ item }} is not masked"
+  loop: "{{ verification_masked_units }}"
+  failed_when: false
+
+# ------------------------------------------------------------------
+# Disabled services (unmasked but not started at boot)
+# ------------------------------------------------------------------
+- name: Security | Assert services are disabled
+  ansible.builtin.assert:
+    that: >-
+      ansible_facts.services[item] is defined and
+      ansible_facts.services[item].status == 'disabled'
+    quiet: true
+    success_msg: "PASS: {{ item }} is disabled (not masked)"
+    fail_msg: "WARN: {{ item }} is not disabled"
+  loop: "{{ verification_disabled_units }}"
+  failed_when: false
+
+# ------------------------------------------------------------------
+# SELinux
+# ------------------------------------------------------------------
+- name: Security | Get SELinux status
+  ansible.builtin.command:
+    cmd: getenforce
+  register: verification_selinux
+  changed_when: false
+
+- name: Security | Assert SELinux enforcing
+  ansible.builtin.assert:
+    that: verification_selinux.stdout == "Enforcing"
+    quiet: true
+    success_msg: "PASS: SELinux enforcing"
+    fail_msg: "FAIL: SELinux not enforcing"
+
+# ------------------------------------------------------------------
+# Security daemons (using service_facts)
+# ------------------------------------------------------------------
+- name: Security | Assert security daemons active
+  ansible.builtin.assert:
+    that: >-
+      ansible_facts.services[item ~ '.service'] is defined and
+      ansible_facts.services[item ~ '.service'].state == 'running'
+    quiet: true
+    success_msg: "PASS: {{ item }} is active"
+    fail_msg: "WARN: {{ item }} is not active"
+  loop:
+    - avahi-daemon
+    - fapolicyd
+    - usbguard
+    - auditd
+  failed_when: false
+
+# ------------------------------------------------------------------
+# Audit -- rule count
+# ------------------------------------------------------------------
+- name: Security | Count loaded audit rules
+  ansible.builtin.shell:
+    cmd: "set -o pipefail && auditctl -l | wc -l"
+  register: verification_audit_rules
+  changed_when: false
+
+- name: Security | Report audit rules count
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'PASS: ' ~ (verification_audit_rules.stdout | trim) ~ ' audit rules loaded'
+         if (verification_audit_rules.stdout | trim | int) > 40
+         else 'WARN: Only ' ~ (verification_audit_rules.stdout | trim)
+           ~ ' audit rules loaded (expected > 40) -- if audit is immutable (auditctl -s shows enabled 2), reboot to clear and re-deploy' }}

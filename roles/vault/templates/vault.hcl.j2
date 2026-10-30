@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+# HashiCorp Vault CE configuration
+
+storage "raft" {
+  path    = "{{ vault_data_dir }}"
+  node_id = "{{ vault_raft_node_id }}"
+}
+
+listener "tcp" {
+  address       = "127.0.0.1:8200"
+  tls_cert_file = "{{ vault_tls_cert_file }}"
+  tls_key_file  = "{{ vault_tls_key_file }}"
+  tls_disable   = "false"
+}
+
+api_addr     = "{{ vault_api_addr }}"
+cluster_addr = "{{ vault_cluster_addr }}"
+ui           = {{ vault_ui | lower }}
+disable_mlock = {{ vault_disable_mlock | lower }}
+log_level    = "{{ vault_log_level }}"

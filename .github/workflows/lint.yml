@@ -1,0 +1,155 @@
+---
+name: Lint
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  yaml:
+    name: YAML Lint
+    runs-on: ubuntu-latest
+    env:
+      YAMLLINT_CONFIG_FILE: lint/.yamllint.yml
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements-lint.txt
+      - run: yamllint .
+
+  ansible:
+    name: Ansible Lint
+    runs-on: ubuntu-latest
+    env:
+      YAMLLINT_CONFIG_FILE: lint/.yamllint.yml
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements-lint.txt
+      - run: >-
+          ansible-galaxy collection install -r collections/requirements.yml --force &&
+          ansible-galaxy role install -r roles/requirements.yml --force -p roles/
+      - run: ansible-lint
+      - run: ansible-playbook playbooks/site.yml --syntax-check
+
+  python:
+    name: Python Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements-lint.txt
+      - run: ruff check .
+      - run: pyright
+
+  markdown:
+    name: Markdown Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements-lint.txt
+      - run: >-
+          pymarkdown --config lint/.pymarkdownlint.yml scan
+          README.md CONTRIBUTING.md SECURITY.md docs/CHANGELOG.md docs/*.md docs/decisions/*.md
+      - run: linkbust README.md CONTRIBUTING.md SECURITY.md docs/CHANGELOG.md docs/*.md docs/decisions/*.md
+
+  markdown-structure:
+    name: Markdown Structure Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DavidAnson/markdownlint-cli2-action@v19
+        with:
+          config: lint/.markdownlint-cli2.yaml
+      - run: npx markdown-table-formatter@1.7.0 --check README.md CONTRIBUTING.md SECURITY.md docs/*.md
+
+  security:
+    name: Security Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements-lint.txt
+      - run: bandit -c pyproject.toml -r roles/common/ roles/dns/ roles/avahi/ roles/vault/ roles/proxy/ roles/verification/ playbooks/
+      - run: checkov --config-file lint/.checkov.yaml -d .
+      - run: detect-secrets scan --baseline lint/.secrets.baseline
+
+  actions-lint:
+    name: Actions Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install actionlint-py
+      - run: actionlint
+
+  fedora-native:
+    name: Fedora-native Lint
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:44
+    steps:
+      - uses: actions/checkout@v4
+      - run: dnf install -y git gitleaks hadolint selint shfmt
+      - run: gitleaks detect --source . -c lint/.gitleaks.toml -v --redact --no-git
+      - run: hadolint --config lint/.hadolint.yaml lint/Containerfile.lint
+      - run: selint -r roles/auth/files/selinux/ roles/dns/files/selinux/ roles/vault/files/selinux/
+      - run: shfmt -d roles/common/files/bin/* roles/common/files/bashrc.d/* lint/lint-fedora-native.sh
+
+  shell:
+    name: Shell Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: shellcheck roles/common/files/bin/* roles/common/files/bashrc.d/* lint/lint-fedora-native.sh
+
+  spelling:
+    name: Spelling
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements-lint.txt
+      - run: >-
+          codespell --config pyproject.toml
+          inventory/ playbooks/ roles/common/ roles/dns/ roles/avahi/ roles/vault/ roles/proxy/ roles/verification/
+          collections/ Makefile README.md CONTRIBUTING.md SECURITY.md docs/CHANGELOG.md pyproject.toml lint/
+          ansible.cfg requirements-lint.txt requirements-rpm.txt .github/

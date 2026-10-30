@@ -1,0 +1,102 @@
+{{ ansible_managed | default('Ansible managed') | comment }}
+
+server:
+    # Network (interface and port managed by dnsconfd via listen_address)
+    do-ip4: {{ 'yes' if dns_do_ip4 else 'no' }}
+    do-ip6: {{ 'yes' if dns_do_ip6 else 'no' }}
+    do-tcp: {{ 'yes' if dns_do_tcp else 'no' }}
+    do-udp: {{ 'yes' if dns_do_udp else 'no' }}
+
+    # Access control
+{% for acl in dns_access_control %}
+    access-control: {{ acl.subnet }} {{ acl.action }}
+{% endfor %}
+{% if dns_lan_enabled | default(false) | bool %}
+    access-control: {{ dns_lan_subnet }} allow
+{% endif %}
+    do-not-query-localhost: {{ 'yes' if dns_do_not_query_localhost else 'no' }}
+
+    # Performance
+    num-threads: {{ __dns_threads }}
+    msg-cache-size: {{ dns_msg_cache_size }}
+    rrset-cache-size: {{ dns_rrset_cache_size }}
+    key-cache-size: {{ dns_key_cache_size }}
+    neg-cache-size: {{ dns_neg_cache_size }}
+    cache-min-ttl: {{ dns_cache_min_ttl }}
+    cache-max-ttl: {{ dns_cache_max_ttl }}
+    prefetch: {{ 'yes' if dns_prefetch else 'no' }}
+    prefetch-key: {{ 'yes' if dns_prefetch_key else 'no' }}
+    serve-expired: {{ 'yes' if dns_serve_expired else 'no' }}
+{% if dns_serve_expired %}
+    serve-expired-ttl: {{ dns_serve_expired_ttl }}
+{% endif %}
+    rrset-roundrobin: {{ 'yes' if dns_rrset_roundrobin else 'no' }}
+    minimal-responses: {{ 'yes' if dns_minimal_responses else 'no' }}
+    edns-buffer-size: {{ dns_edns_buffer_size }}
+
+    # Security
+    hide-identity: {{ 'yes' if dns_hide_identity else 'no' }}
+    hide-version: {{ 'yes' if dns_hide_version else 'no' }}
+    harden-glue: {{ 'yes' if dns_harden_glue else 'no' }}
+    harden-dnssec-stripped: {{ 'yes' if dns_harden_dnssec_stripped else 'no' }}
+    harden-below-nxdomain: {{ 'yes' if dns_harden_below_nxdomain else 'no' }}
+    harden-large-queries: {{ 'yes' if dns_harden_large_queries else 'no' }}
+    harden-algo-downgrade: {{ 'yes' if dns_harden_algo_downgrade else 'no' }}
+    use-caps-for-id: {{ 'yes' if dns_use_caps_for_id else 'no' }}
+    val-clean-additional: {{ 'yes' if dns_val_clean_additional else 'no' }}
+    unwanted-reply-threshold: {{ dns_unwanted_reply_threshold }}
+
+    # Privacy
+    qname-minimisation: {{ 'yes' if dns_qname_minimisation else 'no' }}
+    qname-minimisation-strict: {{ 'yes' if dns_qname_minimisation_strict else 'no' }}
+    aggressive-nsec: {{ 'yes' if dns_aggressive_nsec else 'no' }}
+{% if dns_dnssec_enabled %}
+
+    # DNSSEC
+    auto-trust-anchor-file: "{{ __dns_root_key }}"
+    val-log-level: {{ dns_val_log_level }}
+{% endif %}
+{% if dns_root_hints_update_enabled %}
+
+    # Root hints
+    root-hints: "{{ __dns_root_hints_file }}"
+{% endif %}
+
+    # Private addresses (rebinding protection)
+{% for addr in dns_private_addresses %}
+    private-address: {{ addr }}
+{% endfor %}
+{% if dns_private_domains | length > 0 %}
+{% for domain in dns_private_domains %}
+    private-domain: "{{ domain }}"
+{% endfor %}
+    # Allow .local queries for private domains (e.g. vault.local)
+    local-zone: "local." nodefault
+{% endif %}
+{% if dns_insecure_domains | length > 0 %}
+{% for domain in dns_insecure_domains %}
+    domain-insecure: "{{ domain }}"
+{% endfor %}
+{% endif %}
+{% if dns_block_doh_canary %}
+
+    # Firefox DoH canary: NXDOMAIN tells Firefox to use system DNS
+    local-zone: "use-application-dns.net" always_nxdomain
+{% endif %}
+
+    # Logging
+    verbosity: {{ dns_verbosity }}
+    use-syslog: {{ 'yes' if dns_use_syslog else 'no' }}
+    log-queries: {{ 'yes' if dns_log_queries else 'no' }}
+    log-replies: {{ 'yes' if dns_log_replies else 'no' }}
+    # Disable chroot -- SELinux unbound_t provides confinement; chroot
+    # conflicts with absolute paths for root-hints and trust anchors.
+    chroot: ""
+
+    # Include additional configuration
+    include: "/etc/unbound/conf.d/*.conf"
+
+# Remote control -- required by dnsconfd to manage Unbound via unbound-control
+remote-control:
+    control-enable: yes
+    control-interface: /run/unbound/control

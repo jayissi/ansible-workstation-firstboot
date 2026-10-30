@@ -1,0 +1,66 @@
+---
+# ---------------------------------------------------------------------------
+# Auth / PAM hardening (CIS RHEL 9 v3.0.0)
+# ---------------------------------------------------------------------------
+
+# authselect profile and features
+auth_profile: sssd
+auth_features:
+  - with-tlog
+  - with-faillock
+  - with-pamaccess
+  - with-pwhistory
+  - without-nullok
+
+# ---------------------------------------------------------------------------
+# faillock -- CIS 5.3.3.1.x (account lockout after failed attempts)
+# ---------------------------------------------------------------------------
+auth_faillock_deny: 3
+auth_faillock_unlock_time: 900
+auth_faillock_fail_interval: 900
+auth_faillock_even_deny_root: true
+auth_faillock_root_unlock_time: 60
+auth_faillock_dir: /var/log/faillock
+
+# ---------------------------------------------------------------------------
+# pwquality -- CIS 5.3.3.2.x (password complexity)
+# ---------------------------------------------------------------------------
+auth_pwquality_minlen: 14
+auth_pwquality_minclass: 4
+auth_pwquality_maxrepeat: 3
+auth_pwquality_maxsequence: 3
+auth_pwquality_dictcheck: 1
+auth_pwquality_retry: 3
+
+# ---------------------------------------------------------------------------
+# pwhistory -- CIS 5.3.3.3.1 (password reuse)
+# ---------------------------------------------------------------------------
+auth_pwhistory_remember: 24
+
+# ---------------------------------------------------------------------------
+# nsswitch.conf hosts line (post-authselect override)
+# ---------------------------------------------------------------------------
+auth_nsswitch_hosts: "files mdns_minimal [NOTFOUND=return] myhostname dns"
+
+# ---------------------------------------------------------------------------
+# vault-ssh-helper (OTP validation via Vault SSH secrets engine)
+# ---------------------------------------------------------------------------
+auth_vault_ssh_helper_enabled: true
+# vault-ssh-helper has no RPM package (confirmed: no Fedora/RHEL package
+# exists upstream, see hashicorp/vault-ssh-helper#68, still open). Installed
+# as a binary release from releases.hashicorp.com instead of via dnf.
+auth_vault_ssh_helper_version: "0.2.4"
+auth_vault_ssh_helper_checksum: "1fd74ccfe4de134dcc527771c9eaaa2f95756975c11baff136eecdbe56bd0e1d"
+auth_vault_ssh_helper_addr: "https://127.0.0.1:8200"
+auth_vault_ssh_helper_mount: "ssh-otp"
+auth_vault_ssh_helper_ca_cert: "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
+
+# ---------------------------------------------------------------------------
+# FIDO2/U2F placeholder (future -- see backlog)
+# ---------------------------------------------------------------------------
+auth_pam_u2f_enabled: false
+
+# ---------------------------------------------------------------------------
+# SELinux policy compilation directory
+# ---------------------------------------------------------------------------
+auth_selinux_dir: /opt/auth-selinux

@@ -1,0 +1,7 @@
+{{ "{{" }}- with pkiCert "pki_int/issue/workstation-leaf" "common_name=localhost" "alt_names=localhost,{{ vault_local_hostname }},{{ ansible_hostname }}" "ip_sans=127.0.0.1" "ttl={{ vault_pki_leaf_ttl }}" -{{ "}}" }}
+-----BEGIN VAULT-AGENT-CERT-----
+{{ "{{" }} .Cert {{ "}}" }}
+{{ "{{" }} .CA {{ "}}" }}
+-----BEGIN VAULT-AGENT-KEY-----
+{{ "{{" }} .Key {{ "}}" }}
+{{ "{{" }}- end -{{ "}}" }}

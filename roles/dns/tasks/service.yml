@@ -1,0 +1,50 @@
+---
+# Enable Unbound (dnsconfd manages its lifecycle) and start services
+
+- name: Service | Enable Unbound (dnsconfd manages start/stop)
+  ansible.builtin.systemd_service:
+    name: '{{ __dns_service_name }}'
+    enabled: true
+    daemon_reload: true
+
+# dnsconfd starts Unbound, configures upstreams, and manages resolv.conf.
+# Must start before timers that depend on Unbound being active.
+- name: Service | Enable and start dnsconfd
+  ansible.builtin.systemd_service:
+    name: dnsconfd.service
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Service | Enable root hints update timer
+  ansible.builtin.systemd_service:
+    name: unbound-root-hints.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: dns_root_hints_update_enabled | bool
+
+- name: Service | Enable blocklist update timer
+  ansible.builtin.systemd_service:
+    name: unbound-blocklist.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: dns_blocklist_enabled | bool and not (dns_rpz_enabled | default(false) | bool)
+
+# Reload NM so it picks up dns=dnsconfd and pushes upstream servers
+# to dnsconfd, which then configures Unbound's forward zones.
+- name: Service | Reload NetworkManager to activate dnsconfd integration
+  ansible.builtin.systemd_service:
+    name: NetworkManager.service
+    state: reloaded
+
+# Wait for dnsconfd to configure Unbound with upstream servers
+- name: Service | Wait for DNS resolution via dnsconfd
+  ansible.builtin.command:
+    cmd: dig @127.0.0.1 example.com +short +timeout=5
+  register: __dns_check
+  retries: 6
+  delay: 5
+  until: __dns_check.rc == 0 and __dns_check.stdout | trim | length > 0
+  changed_when: false

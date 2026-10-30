@@ -1,0 +1,87 @@
+---
+# System target and polkit rules for SELinux-hardened workstations
+
+# Deploy polkit rule: allow wheel group to manage systemd without
+# additional polkit auth prompts. Required because staff_u/sysadm_t
+# SELinux context triggers polkit auth_admin checks that block
+# systemctl commands from GUI terminals.
+- name: System | Deploy polkit rule for wheel group systemd access
+  ansible.builtin.copy:
+    dest: /etc/polkit-1/rules.d/50-wheel-systemd.rules
+    content: |
+      // Allow wheel group to manage systemd services and targets
+      // without additional polkit authentication (sudo is sufficient).
+      // Required for SELinux staff_u users managing services from GUI.
+      polkit.addRule(function(action, subject) {
+          if (action.id.indexOf("org.freedesktop.systemd1.") === 0 &&
+              subject.isInGroup("wheel")) {
+              return polkit.Result.YES;
+          }
+      });
+    owner: root
+    group: root
+    mode: "0644"
+
+# Set the system default target (graphical.target for workstations)
+- name: System | Set system default target
+  ansible.builtin.command:
+    cmd: "systemctl set-default {{ common_default_target }}"
+  register: common_target_result
+  changed_when: "'Created symlink' in common_target_result.stdout"
+
+- name: System | Enable GDM if graphical target
+  ansible.builtin.systemd:
+    name: gdm
+    enabled: true
+  when: "'graphical' in common_default_target"
+  failed_when: false
+
+# Avahi is managed by roles/avahi with a hardened config and runs as
+# an enabled service. D-Bus activation masking is no longer needed.
+
+# ------------------------------------------------------------------
+# Logrotate drop-in configs for services without RPM-provided rotation
+# ------------------------------------------------------------------
+- name: System | Deploy logrotate config for sudo log
+  ansible.builtin.copy:
+    dest: /etc/logrotate.d/sudo
+    content: |
+      /var/log/sudo.log {
+          weekly
+          rotate 12
+          compress
+          delaycompress
+          missingok
+          notifempty
+      }
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: System | Deploy logrotate config for fapolicyd access log
+  ansible.builtin.copy:
+    dest: /etc/logrotate.d/fapolicyd
+    content: |
+      /var/log/fapolicyd-access.log {
+          weekly
+          rotate 8
+          compress
+          delaycompress
+          missingok
+          notifempty
+          create 0640 fapolicyd fapolicyd
+          postrotate
+              /usr/bin/systemctl kill --signal=SIGHUP fapolicyd.service 2>/dev/null || true
+          endscript
+      }
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: System | Ensure lastlog2 database directory exists
+  ansible.builtin.file:
+    path: /var/lib/lastlog
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'

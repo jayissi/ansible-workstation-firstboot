@@ -1,0 +1,8 @@
+{{ ansible_managed | default('Ansible managed') | comment }}
+
+[Unit]
+Description=Reload Nginx after cert rotation by Vault Agent
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl reload {{ __proxy_service_name }}

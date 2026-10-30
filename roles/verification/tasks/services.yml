@@ -1,0 +1,151 @@
+---
+# roles/verification/tasks/services.yml
+# Application-level service checks: DNS, auth/PAM, Vault, AIDE, updates
+
+# ------------------------------------------------------------------
+# DNS -- dnsconfd service
+# ------------------------------------------------------------------
+- name: Services | Assert dnsconfd service is active
+  ansible.builtin.assert:
+    that: >-
+      ansible_facts.services['dnsconfd.service'] is defined and
+      ansible_facts.services['dnsconfd.service'].state == 'running'
+    quiet: true
+    success_msg: "PASS: dnsconfd is active"
+    fail_msg: "FAIL: dnsconfd is not active"
+  failed_when: false
+
+# ------------------------------------------------------------------
+# Auth / PAM hardening (roles/auth)
+# ------------------------------------------------------------------
+- name: Services | Check authselect profile includes faillock
+  ansible.builtin.command:
+    cmd: authselect current
+  register: verification_authselect
+  changed_when: false
+  failed_when: false
+
+- name: Services | Assert authselect includes with-faillock
+  ansible.builtin.assert:
+    that: "'with-faillock' in verification_authselect.stdout"
+    quiet: true
+    success_msg: "PASS: authselect profile includes with-faillock"
+    fail_msg: "FAIL: authselect profile does not include with-faillock"
+  when: verification_authselect.rc == 0
+
+- name: Services | Check vault-ssh-helper binary exists
+  ansible.builtin.stat:
+    path: /usr/bin/vault-ssh-helper
+  register: verification_vault_ssh_helper
+
+- name: Services | Assert vault-ssh-helper binary exists
+  ansible.builtin.assert:
+    that: verification_vault_ssh_helper.stat.exists
+    quiet: true
+    success_msg: "PASS: vault-ssh-helper binary present"
+    fail_msg: "WARN: vault-ssh-helper binary not found at /usr/bin/vault-ssh-helper"
+  failed_when: false
+
+- name: Services | Check SSH CA public key exists
+  ansible.builtin.stat:
+    path: /etc/ssh/trusted-user-ca-keys.pem
+  register: verification_ssh_ca_key
+
+- name: Services | Assert SSH CA public key exists
+  ansible.builtin.assert:
+    that: verification_ssh_ca_key.stat.exists
+    quiet: true
+    success_msg: "PASS: SSH CA public key present at /etc/ssh/trusted-user-ca-keys.pem"
+    fail_msg: "WARN: SSH CA public key not found (Vault SSH CA engine may not be configured yet)"
+  failed_when: false
+
+# ------------------------------------------------------------------
+# Vault
+# ------------------------------------------------------------------
+- name: Services | Check Vault audit devices enabled
+  ansible.builtin.uri:
+    url: "{{ verification_vault_addr }}/v1/sys/audit"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _vault_token_raw | default('') }}"
+    validate_certs: false
+    status_code:
+      - 200
+      - 400
+      - 403
+      - 500
+      - 503
+  register: verification_vault_audit
+  failed_when: false
+
+- name: Services | Assert Vault file audit device enabled
+  ansible.builtin.assert:
+    that: "'file/' in (verification_vault_audit.json | default({}) | string)"
+    quiet: true
+    success_msg: "PASS: Vault file audit device enabled"
+    fail_msg: "WARN: Vault file audit device not detected (Vault may be sealed)"
+  failed_when: false
+  when: verification_vault_audit.status | default(0) == 200
+
+# ------------------------------------------------------------------
+# AIDE database
+# ------------------------------------------------------------------
+- name: Services | Check AIDE database
+  ansible.builtin.stat:
+    path: /var/lib/aide/aide.db.gz
+  register: verification_aide
+
+- name: Services | Report AIDE status
+  ansible.builtin.debug:
+    msg: "{{ 'PASS: AIDE database exists' if verification_aide.stat.exists else 'WARN: AIDE database not found' }}"
+
+- name: Services | Check Vault health
+  ansible.builtin.uri:
+    url: "{{ verification_vault_addr }}/v1/sys/health"
+    validate_certs: false
+    status_code:
+      - 200
+      - 429
+      - 472
+      - 473
+      - 503
+  register: verification_vault
+  failed_when: false
+
+- name: Services | Report Vault status
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'PASS: Vault healthy and unsealed'
+         if verification_vault.status | default(0) == 200
+         else 'WARN: Vault status ' ~ (verification_vault.status | default('unreachable')) }}
+
+- name: Services | Assert Vault Agent running
+  ansible.builtin.assert:
+    that: >-
+      ansible_facts.services['vault-agent.service'] is defined and
+      ansible_facts.services['vault-agent.service'].state == 'running'
+    quiet: true
+    success_msg: "PASS: Vault Agent running"
+    fail_msg: "WARN: Vault Agent not running"
+  failed_when: false
+
+# ------------------------------------------------------------------
+# System updates
+# ------------------------------------------------------------------
+- name: Services | Check pending updates
+  ansible.builtin.command:
+    cmd: dnf check-update --quiet
+  register: verification_updates
+  changed_when: false
+  failed_when: false
+
+- name: Services | Report update status
+  ansible.builtin.debug:
+    msg: "{{ 'PASS: System up to date' if verification_updates.rc == 0 else 'INFO: Updates available' }}"
+
+# ------------------------------------------------------------------
+# Summary
+# ------------------------------------------------------------------
+- name: Services | Verification complete
+  ansible.builtin.debug:
+    msg: "Workstation hardening verification complete. Review output above."

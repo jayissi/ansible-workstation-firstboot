@@ -1,0 +1,93 @@
+---
+# roles/vault/tasks/install.yml
+# Install HashiCorp Vault CE from official repository
+
+- name: Install | Add HashiCorp repository
+  ansible.builtin.yum_repository:
+    name: hashicorp
+    description: HashiCorp Stable
+    baseurl: https://rpm.releases.hashicorp.com/fedora/$releasever/$basearch/stable
+    gpgkey: https://rpm.releases.hashicorp.com/gpg
+    gpgcheck: true
+    repo_gpgcheck: true
+    enabled: true
+
+- name: Install | Install Vault package
+  ansible.builtin.dnf:
+    name: vault
+    state: "{{ 'latest' if vault_version == 'latest' else 'present' }}"
+
+- name: Install | Create vault system group
+  ansible.builtin.group:
+    name: "{{ vault_group }}"
+    system: true
+    state: present
+
+- name: Install | Create vault system user
+  ansible.builtin.user:
+    name: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ vault_data_dir }}"
+    create_home: false
+
+- name: Install | Create Vault directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(vault_user) }}"
+    group: "{{ item.group | default(vault_group) }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ vault_config_dir }}", mode: "0750"}
+    - {path: "{{ vault_data_dir }}", mode: "0750"}
+    - {path: "{{ vault_log_dir }}", mode: "0750"}
+    - {path: "{{ vault_cert_dir }}", mode: "0700"}
+    - {path: "{{ vault_run_dir }}", mode: "0700", owner: root, group: root}
+    - {path: "{{ vault_agent_run_dir }}", mode: "0700"}
+    - {path: "{{ vault_selinux_dir }}", mode: "0755", owner: root, group: root}
+    - {path: "{{ vault_config_dir }}/templates", mode: "0750"}
+
+- name: Install | Apply SELinux file contexts to Vault directories
+  ansible.builtin.command:
+    cmd: "restorecon -Rv {{ item }}"
+  loop:
+    - "{{ vault_config_dir }}"
+    - "{{ vault_data_dir }}"
+    - "{{ vault_log_dir }}"
+  changed_when: false
+  failed_when: false
+
+- name: Install | Deploy polkit rule for Vault Agent cert-reload
+  ansible.builtin.copy:
+    dest: /etc/polkit-1/rules.d/49-vault-agent-reload.rules
+    content: |
+      // Narrowly scoped: allow ONLY the vault user to reload ONLY
+      // vault.service, needed for Vault Agent's template "command" hook
+      // (systemctl reload vault) after TLS cert rotation. Deliberately
+      // does not grant broader systemd management (unlike the wheel
+      // group rule) since vault is an unprivileged service account.
+      polkit.addRule(function(action, subject) {
+          if (action.id == "org.freedesktop.systemd1.manage-units" &&
+              action.lookup("unit") == "vault.service" &&
+              subject.user == "{{ vault_user }}") {
+              return polkit.Result.YES;
+          }
+      });
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install | Deploy tmpfiles.d config for vault run dirs
+  ansible.builtin.copy:
+    dest: /etc/tmpfiles.d/vault-run.conf
+    content: |
+      # Clean transient vault secrets on boot
+      d {{ vault_run_dir }} 0700 root root - -
+      e {{ vault_run_dir }}/*.tmp 0 root root 0 -
+      d {{ vault_agent_run_dir }} 0700 {{ vault_user }} {{ vault_group }} - -
+      e {{ vault_agent_run_dir }}/*.tmp 0 {{ vault_user }} {{ vault_group }} 0 -
+    owner: root
+    group: root
+    mode: "0644"

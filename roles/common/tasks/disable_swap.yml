@@ -1,0 +1,32 @@
+---
+# roles/common/tasks/disable_swap.yml
+# Vault hardening: prevent paging secrets to disk on physical hosts.
+# Handles both traditional swap partitions/files and Fedora's default
+# zram-generator service.
+
+- name: Disable Swap | Check current swap status
+  ansible.builtin.command:
+    cmd: swapon --show=NAME --noheadings
+  register: common_swap_active
+  changed_when: false
+  failed_when: false
+
+- name: Disable Swap | Disable active swap
+  ansible.builtin.command:
+    cmd: swapoff -a
+  when: common_swap_active.stdout | trim | length > 0
+  changed_when: true
+
+- name: Disable Swap | Mask zram swap generator (Fedora Workstation default)
+  ansible.builtin.systemd_service:
+    name: "systemd-zram-setup@zram0.service"
+    masked: true
+    enabled: false
+  failed_when: false
+
+- name: Disable Swap | Comment out swap entries in fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\sswap\s.*)$'
+    replace: '# \1  # disabled by ansible-workstation-firstboot (Vault hardening)'
+  register: common_fstab_swap

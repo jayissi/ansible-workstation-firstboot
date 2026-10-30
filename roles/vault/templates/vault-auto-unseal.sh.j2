@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Auto-unseal Vault using age-encrypted keys with TPM2-bound identity
+# Uses curl for API calls (vault CLI has issues in systemd service context)
+
+VAULT_API="{{ vault_addr }}"
+UNSEAL_KEYS_FILE="{{ vault_unseal_keys_file }}"
+RUN_DIR="{{ vault_run_dir }}"
+
+# Wait for Vault API to respond
+attempts=0
+while [ $attempts -lt 30 ]; do
+  health=$(curl -sk "${VAULT_API}/v1/sys/health" 2>/dev/null) || true
+  if echo "${health}" | grep -q '"initialized"'; then
+    break
+  fi
+  sleep 1
+  attempts=$((attempts + 1))
+done
+
+# Check seal status
+vault_status=$(echo "${health}" | grep -o '"sealed":[a-z]*' | cut -d: -f2)
+[ "${vault_status}" = "true" ] || exit 0
+
+# Find unseal keys
+[ -f "${UNSEAL_KEYS_FILE}" ] || exit 0
+
+# Determine identity file for age decryption
+identity_file=""
+cleanup_identity=false
+{% if vault_use_tpm2 %}
+if [ -n "${CREDENTIALS_DIRECTORY:-}" ] && \
+   [ -f "${CREDENTIALS_DIRECTORY}/vault-age-identity" ]; then
+  identity_file="${CREDENTIALS_DIRECTORY}/vault-age-identity"
+elif [ -f "/etc/credstore.encrypted/vault-age-identity.cred" ]; then
+  identity_file="${RUN_DIR}/age-identity.tmp"
+  cleanup_identity=true
+  systemd-creds decrypt --name=vault-age-identity \
+    /etc/credstore.encrypted/vault-age-identity.cred "${identity_file}" 2>/dev/null || true
+fi
+{% endif %}
+if [ -z "${identity_file}" ] && [ -f "{{ vault_age_identity_file }}" ]; then
+  identity_file="{{ vault_age_identity_file }}"
+fi
+[ -n "${identity_file}" ] && [ -f "${identity_file}" ] || exit 0
+
+# Decrypt keys to run dir (never /tmp)
+keys_file="${RUN_DIR}/unseal-keys.tmp"
+age -d -i "${identity_file}" "${UNSEAL_KEYS_FILE}" > "${keys_file}" 2>/dev/null || true
+
+# Unseal with each key until unsealed
+while IFS= read -r key; do
+  [ -z "${key}" ] && continue
+  curl -sk -X PUT "${VAULT_API}/v1/sys/unseal" \
+    -H "Content-Type: application/json" \
+    -d "{\"key\":\"${key}\"}" >/dev/null 2>&1 || true
+  check=$(curl -sk "${VAULT_API}/v1/sys/health" 2>/dev/null) || true
+  if echo "${check}" | grep -q '"sealed":false'; then
+    break
+  fi
+done < "${keys_file}"
+
+# Cleanup -- shred transient files
+shred -u "${keys_file}" 2>/dev/null || rm -f "${keys_file}"
+if [ "${cleanup_identity}" = "true" ] && [ -f "${identity_file}" ]; then
+  shred -u "${identity_file}" 2>/dev/null || rm -f "${identity_file}"
+fi

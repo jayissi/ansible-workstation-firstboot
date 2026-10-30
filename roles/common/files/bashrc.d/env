@@ -1,0 +1,10 @@
+#!/bin/bash
+
+VIM=$(command -v vim)
+
+alias rd="cd ~ && /usr/bin/sudo /usr/bin/eject /dev/sda"
+readonly EDITOR=${VIM} KUBE_EDITOR=${VIM}
+export EDITOR KUBE_EDITOR
+umask 0027
+
+unset VIM

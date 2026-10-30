@@ -1,0 +1,11 @@
+---
+config:
+  extends: .markdownlint.yml
+globs:
+  - "**/*.md"
+ignores:
+  - "docs/CHANGELOG.md"
+  - ".venv/**"
+  - "roles/linux-system-roles*/**"
+  - "roles/willshersystems*/**"
+  - "roles/fedora.*/**"

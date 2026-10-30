@@ -1,0 +1,28 @@
+# {{ ansible_managed }}
+[Unit]
+Description=HashiCorp Vault Agent
+Documentation=https://developer.hashicorp.com/vault/docs/agent-and-proxy/agent
+Requires=vault.service vault-agent-secret.service
+After=vault.service vault-unseal.service vault-agent-secret.service
+
+[Service]
+Type=simple
+User={{ vault_user }}
+Group={{ vault_group }}
+ExecStart=/usr/bin/vault agent -config=/etc/vault-agent.d/vault-agent.hcl
+ExecReload=/bin/kill --signal HUP $MAINPID
+KillMode=process
+KillSignal=SIGINT
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+
+ProtectSystem=full
+ReadWritePaths={{ vault_cert_dir }}
+ReadWritePaths={{ vault_proxy_cert_dir }}
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

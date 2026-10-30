@@ -1,0 +1,34 @@
+---
+# markdownlint rule configuration
+# See: https://github.com/DavidAnson/markdownlint/blob/main/doc/Rules.md
+
+default: true
+
+# MD013/line-length - match yamllint max (200)
+MD013:
+  line_length: 200
+  heading_line_length: 200
+  code_block_line_length: 200
+  code_blocks: true
+  tables: true
+  headings: true
+  strict: false
+
+# MD024/no-duplicate-heading - allow duplicates in different sections
+MD024:
+  siblings_only: true
+
+# MD033/no-inline-html - disabled (Ansible docs use HTML for badges/tables)
+MD033: false
+
+# MD046/code-block-style - fenced code blocks only
+MD046:
+  style: fenced
+
+# MD049/emphasis-style - asterisks
+MD049:
+  style: asterisk
+
+# MD050/strong-style - asterisks
+MD050:
+  style: asterisk

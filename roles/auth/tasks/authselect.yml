@@ -1,0 +1,60 @@
+---
+# roles/auth/tasks/authselect.yml
+# Authselect profile, nsswitch override, SSSD enablement
+#
+# "authselect select --force" unconditionally reports success
+# (rc=0) and creates a new backup every time it runs, even when
+# the profile/features already match -- confirmed via runtime
+# testing: changed_when: rc==0 made this task (and the
+# nsswitch.conf override, which it overwrites every time) always
+# report "changed" on idempotent re-runs. Compare against
+# "authselect current" first so repeated deploys with no actual
+# drift are true no-ops.
+
+- name: Authselect | Get current authselect configuration
+  ansible.builtin.command:
+    cmd: authselect current
+  register: __auth_current
+  changed_when: false
+  failed_when: false
+
+- name: Authselect | Determine if authselect profile/features already match desired state
+  ansible.builtin.set_fact:
+    __auth_already_correct: >-
+      {{
+        __auth_current.rc == 0 and
+        (__auth_current.stdout_lines | select('match', '^Profile ID: ' ~ auth_profile ~ '$') | length == 1) and
+        (auth_features | difference(__auth_current_features) | length == 0) and
+        (__auth_current_features | difference(auth_features) | length == 0)
+      }}
+  vars:
+    __auth_current_features: >-
+      {{
+        __auth_current.stdout_lines
+        | select('match', '^- ')
+        | map('regex_replace', '^- ', '')
+        | list
+      }}
+
+- name: Authselect | Select authselect profile with features
+  ansible.builtin.command:
+    cmd: >-
+      authselect select {{ auth_profile }}
+      {{ auth_features | join(' ') }} --force
+  register: __auth_authselect
+  changed_when: true
+  when: not __auth_already_correct
+
+- name: Authselect | Override nsswitch.conf hosts line (post-authselect)
+  ansible.builtin.lineinfile:
+    path: /etc/nsswitch.conf
+    regexp: '^hosts:'
+    line: "hosts:      {{ auth_nsswitch_hosts }}"
+    backup: true
+
+- name: Authselect | Ensure SSSD is running
+  ansible.builtin.systemd_service:
+    name: sssd.service
+    state: started
+    enabled: true
+  notify: Restart sssd

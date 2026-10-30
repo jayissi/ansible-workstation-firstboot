@@ -1,0 +1,47 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Compile and install Vault SELinux policy
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      cd {{ vault_selinux_dir }}
+      rm -f vault.pp tmp/vault.mod tmp/vault.mod.fc 2>/dev/null || true
+      make -f /usr/share/selinux/devel/Makefile vault.pp
+      semodule -i vault.pp
+      semanage port -a -t vault_cluster_port_t -p tcp 8200 2>/dev/null || \
+        semanage port -m -t vault_cluster_port_t -p tcp 8200 2>/dev/null || true
+      semanage port -a -t vault_cluster_port_t -p tcp 8201 2>/dev/null || \
+        semanage port -m -t vault_cluster_port_t -p tcp 8201 2>/dev/null || true
+      restorecon -RF /etc/vault.d/ /etc/nginx/certs/ 2>/dev/null || true
+  changed_when: true
+  notify: Restart vault
+
+- name: Restart vault
+  ansible.builtin.systemd:
+    name: vault
+    state: restarted
+
+- name: Restart vault-agent
+  ansible.builtin.systemd:
+    name: vault-agent
+    state: restarted
+
+- name: Update ca trust
+  ansible.builtin.command:
+    cmd: update-ca-trust
+  changed_when: true
+
+- name: Import Root CA into Chrome/Chromium NSS database
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      mkdir -p {{ common_admin_home }}/.pki/nssdb
+      certutil -d sql:{{ common_admin_home }}/.pki/nssdb \
+        -A -t 'CT,c,c' -n 'Vault Root CA' \
+        -i /etc/pki/ca-trust/source/anchors/vault-root-ca.crt
+  become: true
+  become_user: "{{ common_admin_user }}"
+  changed_when: true

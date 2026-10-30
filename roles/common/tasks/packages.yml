@@ -1,0 +1,31 @@
+---
+# RPM GPG keys, repositories, and package installation
+
+- name: Packages | Import RPM GPG keys
+  ansible.builtin.rpm_key:
+    state: present
+    key: "{{ item }}"
+  loop: "{{ common_rpm_gpg_keys }}"
+  retries: 3
+  delay: 5
+
+- name: Packages | Add third-party repositories
+  ansible.builtin.yum_repository:
+    name: "{{ item.name }}"
+    description: "{{ item.description }}"
+    baseurl: "{{ item.baseurl }}"
+    gpgkey: "{{ item.gpgkey }}"
+    gpgcheck: "{{ item.gpgcheck | default(true) }}"
+    repo_gpgcheck: "{{ item.repo_gpgcheck | default(true) }}"
+    metadata_expire: "{{ item.metadata_expire | default('6h') }}"
+    enabled: true
+  loop: "{{ common_third_party_repos }}"
+
+- name: Packages | Install required packages
+  ansible.builtin.dnf:
+    name: "{{ common_packages }}"
+    state: present
+
+- name: Packages | Remove unnecessary packages
+  ansible.builtin.dnf:
+    autoremove: true

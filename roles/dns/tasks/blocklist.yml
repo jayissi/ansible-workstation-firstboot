@@ -1,0 +1,16 @@
+---
+# DNS blocklist: deploy update script, run initial download
+
+- name: Blocklist | Deploy update script
+  ansible.builtin.template:
+    src: update-blocklist.sh.j2
+    dest: '/usr/local/bin/unbound-update-blocklist'
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Blocklist | Run initial update
+  ansible.builtin.command:
+    cmd: '/usr/local/bin/unbound-update-blocklist'
+    creates: '/etc/unbound/conf.d/50-blocklist.conf'
+  notify: Reload unbound

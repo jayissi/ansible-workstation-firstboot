@@ -1,0 +1,54 @@
+---
+# roles/common/tasks/main.yml
+# Orchestrator: includes focused task files in dependency order
+
+- name: Run preflight checks (LUKS, TPM2)
+  ansible.builtin.include_tasks: preflight.yml
+  tags:
+    - common
+    - preflight
+
+- name: System update and firmware
+  ansible.builtin.include_tasks: update.yml
+  tags:
+    - common
+    - update
+
+- name: Install packages and repositories
+  ansible.builtin.include_tasks: packages.yml
+  tags:
+    - common
+    - packages
+
+- name: Deploy utilities and environment
+  ansible.builtin.include_tasks: utilities.yml
+  tags:
+    - common
+    - utilities
+
+- name: Configure USBGuard
+  ansible.builtin.include_tasks: usbguard.yml
+  tags:
+    - common
+    - usbguard
+
+- name: Deploy SSH security banner
+  ansible.builtin.include_tasks: banner.yml
+  tags:
+    - common
+    - banner
+
+- name: Disable swap on physical hosts (Vault hardening -- prevents paging secrets to disk)
+  ansible.builtin.import_tasks: disable_swap.yml
+  when:
+    - common_disable_swap | default(true) | bool
+    - ansible_virtualization_role | default('host') != 'guest'
+  tags:
+    - common
+    - swap
+
+- name: Configure system target and polkit
+  ansible.builtin.include_tasks: system.yml
+  tags:
+    - common
+    - system

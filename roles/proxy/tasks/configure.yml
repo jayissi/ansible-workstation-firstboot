@@ -1,0 +1,106 @@
+---
+# Remove the default server block so only the Vault proxy is active
+- name: Configure | Remove default nginx server block
+  ansible.builtin.file:
+    path: '{{ __proxy_conf_d_dir }}/default.conf'
+    state: absent
+  notify: Reload nginx
+
+- name: Configure | Deploy Vault reverse proxy configuration
+  ansible.builtin.template:
+    src: vault-proxy.conf.j2
+    dest: '{{ __proxy_conf_d_dir }}/vault-proxy.conf'
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload nginx
+
+# Bootstrap the proxy TLS cert on first run. Vault Agent will handle
+# rotation after this, but Nginx needs a cert to start. Uses the same
+# Vault PKI API as tls_production.yml. Skipped on subsequent runs when
+# the cert file already exists.
+- name: Configure | Check if proxy cert exists
+  ansible.builtin.stat:
+    path: "{{ proxy_tls_cert }}"
+  register: __proxy_cert_check
+
+- name: Configure | Issue initial proxy leaf cert from Vault PKI
+  ansible.builtin.uri:
+    url: "{{ proxy_vault_addr }}/v1/pki_int/issue/workstation-leaf"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ proxy_vault_token }}"
+    body_format: json
+    body:
+      common_name: "{{ proxy_server_name }}"
+      alt_names: "{{ proxy_server_name }}"
+      ttl: "{{ proxy_leaf_ttl | default('2160h') }}"
+    validate_certs: false
+    status_code:
+      - 200
+  register: __proxy_leaf_cert
+  no_log: true
+  when: not __proxy_cert_check.stat.exists
+
+- name: Configure | Deploy proxy TLS certificate chain
+  ansible.builtin.copy:
+    content: "{{ __proxy_leaf_cert.json.data.certificate }}\n{{ __proxy_leaf_cert.json.data.issuing_ca }}\n"
+    dest: "{{ proxy_tls_cert }}"
+    owner: root
+    group: root
+    mode: "0444"
+  when: __proxy_leaf_cert is not skipped and __proxy_leaf_cert.json is defined
+
+- name: Configure | Deploy proxy TLS private key
+  ansible.builtin.copy:
+    content: "{{ __proxy_leaf_cert.json.data.private_key }}\n"
+    dest: "{{ proxy_tls_key }}"
+    owner: root
+    group: root
+    mode: "0400"
+  no_log: true
+  when: __proxy_leaf_cert is not skipped and __proxy_leaf_cert.json is defined
+
+- name: Configure | Copy Root CA to proxy cert directory
+  ansible.builtin.copy:
+    src: /etc/vault.d/certs/root.crt
+    dest: /etc/nginx/certs/root.crt
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0444"
+  when: __proxy_leaf_cert is not skipped and __proxy_leaf_cert.json is defined
+
+- name: Configure | Restore SELinux context on proxy certs
+  ansible.builtin.command:
+    cmd: restorecon -RF /etc/nginx/certs
+  changed_when: true
+  when: __proxy_leaf_cert is not skipped and __proxy_leaf_cert.json is defined
+
+# ---------------------------------------------------------------------------
+# SSH credential gateway -- narrow bastion-facing vhost for OTP / CA creds
+# ---------------------------------------------------------------------------
+- name: Configure | Deploy SSH credential gateway configuration
+  ansible.builtin.template:
+    src: vault-ssh-gateway.conf.j2
+    dest: '{{ __proxy_conf_d_dir }}/vault-ssh-gateway.conf'
+    owner: root
+    group: root
+    mode: '0644'
+  # Must actually reload nginx's own config (not just systemd's unit-file
+  # cache) or changes to this vhost never take effect on the running
+  # process. Confirmed via runtime testing: a content change here was
+  # deployed to disk but the live nginx worker kept serving the old
+  # config, causing every real gateway request to 502 with a stale
+  # upstream TLS error until a full VM reboot restarted nginx.
+  notify: Reload nginx
+  when: proxy_ssh_gateway_enabled | default(true) | bool
+
+- name: Configure | Deploy vault-ssh-target convenience wrapper
+  ansible.builtin.copy:
+    src: vault-ssh-target.sh
+    dest: /usr/local/bin/vault-ssh-target
+    owner: root
+    group: root
+    mode: '0755'
+  when: proxy_ssh_gateway_enabled | default(true) | bool

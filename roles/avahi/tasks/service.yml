@@ -1,0 +1,32 @@
+---
+# Disable chroot via systemd override (avahi config file doesn't support
+# use-chroot key; the --no-chroot flag is command-line only).
+# SELinux avahi_t provides confinement -- chroot is redundant.
+- name: Service | Deploy avahi no-chroot systemd override
+  ansible.builtin.file:
+    path: /etc/systemd/system/avahi-daemon.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: not avahi_use_chroot | bool
+
+- name: Service | Configure avahi --no-chroot override
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/avahi-daemon.service.d/no-chroot.conf
+    content: |
+      [Service]
+      ExecStart=
+      ExecStart=avahi-daemon -s --no-chroot
+    owner: root
+    group: root
+    mode: '0644'
+  when: not avahi_use_chroot | bool
+  notify: Restart avahi
+
+- name: Service | Enable and start Avahi
+  ansible.builtin.systemd_service:
+    name: '{{ __avahi_service_name }}'
+    enabled: true
+    state: started
+    daemon_reload: true

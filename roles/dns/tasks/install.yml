@@ -1,0 +1,113 @@
+---
+# Install Unbound packages, download root hints, deploy systemd timers
+
+- name: Install | Unbound packages
+  ansible.builtin.dnf:
+    name: '{{ __dns_packages }}'
+    state: present
+
+- name: Install | Ensure config directory exists
+  ansible.builtin.file:
+    path: '/etc/unbound'
+    state: directory
+    owner: root
+    group: '{{ __dns_group }}'
+    mode: '0755'
+
+- name: Install | Ensure conf.d directory exists
+  ansible.builtin.file:
+    path: '/etc/unbound/conf.d'
+    state: directory
+    owner: root
+    group: '{{ __dns_group }}'
+    mode: '0755'
+
+# ---------------------------------------------------------------------------
+# SELinux compilation infrastructure (P0-0)
+# ---------------------------------------------------------------------------
+- name: Install | SELinux build dependencies
+  ansible.builtin.dnf:
+    name:
+      - selinux-policy-devel
+      - make
+    state: present
+
+- name: Install | Ensure SELinux source directory exists
+  ansible.builtin.file:
+    path: '{{ dns_selinux_dir }}'
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install | Deploy SELinux policy source files
+  ansible.builtin.copy:
+    src: 'selinux/{{ item }}'
+    dest: '{{ dns_selinux_dir }}/{{ item }}'
+    mode: '0644'
+  loop:
+    - dnsconfd-local.te
+    - dnsconfd-local.if
+    - dnsconfd-local.fc
+    - unbound-local.te
+    - unbound-local.if
+    - unbound-local.fc
+  notify: Compile and install DNS SELinux policies
+
+- name: Install | Check if DNS SELinux modules are loaded
+  ansible.builtin.command:
+    cmd: semodule -l
+  register: __dns_selinux_modules
+  changed_when: >-
+    'dnsconfd-local' not in __dns_selinux_modules.stdout or
+    'unbound-local' not in __dns_selinux_modules.stdout
+  notify: Compile and install DNS SELinux policies
+
+- name: Install | Download root hints
+  ansible.builtin.get_url:
+    url: 'https://www.internic.net/domain/named.root'
+    dest: '{{ __dns_root_hints_file }}'
+    owner: '{{ __dns_user }}'
+    group: '{{ __dns_group }}'
+    mode: '0644'
+  retries: 5
+  delay: 10
+  when: dns_root_hints_update_enabled | bool
+
+- name: Install | Deploy root hints update systemd service
+  ansible.builtin.template:
+    src: 'unbound-root-hints.service.j2'
+    dest: '/etc/systemd/system/unbound-root-hints.service'
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload dns systemd units
+
+- name: Install | Deploy root hints update systemd timer
+  ansible.builtin.template:
+    src: 'unbound-root-hints.timer.j2'
+    dest: '/etc/systemd/system/unbound-root-hints.timer'
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload dns systemd units
+
+- name: Install | Deploy blocklist update systemd service
+  ansible.builtin.template:
+    src: 'unbound-blocklist.service.j2'
+    dest: '/etc/systemd/system/unbound-blocklist.service'
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload dns systemd units
+  when: dns_blocklist_enabled | bool and not (dns_rpz_enabled | default(false) | bool)
+
+- name: Install | Deploy blocklist update systemd timer
+  ansible.builtin.template:
+    src: 'unbound-blocklist.timer.j2'
+    dest: '/etc/systemd/system/unbound-blocklist.timer'
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload dns systemd units
+  when: dns_blocklist_enabled | bool and not (dns_rpz_enabled | default(false) | bool)

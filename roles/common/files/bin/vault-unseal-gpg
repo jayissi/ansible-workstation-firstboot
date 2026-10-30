@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+#
+# vault-unseal-gpg -- Manual Vault unseal using GPG-encrypted keys
+#
+# Decrypts unseal keys with GPG (via dgpg), then pipes them
+# directly to vault operator unseal.
+#
+# NOTE: the playbook only ever generates age-encrypted unseal keys
+# (vault-unseal-keys.age, see vault-unseal-age). This GPG path is a
+# manual, defense-in-depth alternative: an admin who wants key-algorithm
+# diversity must create /root/vault-unseal-keys.gpg themselves (e.g.
+# `dgpg -e vault-unseal-keys.age-plaintext-export > vault-unseal-keys.gpg`
+# right after `vault operator init`, before shredding the plaintext).
+#
+# Usage: vault-unseal-gpg [keys-file]
+
+set -euo pipefail
+
+# staff_u admins land in staff_t under plain "sudo", which SELinux blocks
+# from reading /root/vault-unseal-keys.gpg (admin_home_t). Transparently
+# re-exec into sysadm_t (the correct admin domain). See vault-admin for
+# the same pattern.
+_my_context=$(id -Z 2>/dev/null || true)
+if [[ "${_my_context}" == *":staff_r:staff_t:"* ]]; then
+	exec sudo -r sysadm_r -t sysadm_t "$0" "$@"
+fi
+
+readonly VAULT_ADDR="${VAULT_ADDR:-https://127.0.0.1:8200}"
+readonly UNSEAL_KEYS_FILE="${1:-/root/vault-unseal-keys.gpg}"
+readonly VAULT_CACERT="${VAULT_CACERT:-/etc/vault.d/certs/server-chain.crt}"
+
+export VAULT_ADDR VAULT_CACERT
+
+DGPG=$(command -v dgpg 2>/dev/null || echo "/usr/local/bin/dgpg")
+
+if [ ! -f "${UNSEAL_KEYS_FILE}" ]; then
+	echo "ERROR: Unseal keys file not found: ${UNSEAL_KEYS_FILE}" >&2
+	exit 1
+fi
+
+echo "Decrypting unseal keys with GPG..."
+"${DGPG}" "${UNSEAL_KEYS_FILE}" /dev/stdout | while IFS= read -r key; do
+	[ -z "${key}" ] && continue
+	result=$(vault operator unseal -format=json "${key}" 2>/dev/null) || continue
+	sealed=$(echo "${result}" | grep -o '"sealed":[a-z]*' | cut -d: -f2)
+	progress=$(echo "${result}" | grep -o '"progress":[0-9]*' | cut -d: -f2)
+	echo "Unseal progress: ${progress}"
+	if [ "${sealed}" = "false" ]; then
+		echo "Vault successfully unsealed."
+		break
+	fi
+done

@@ -1,0 +1,30 @@
+---
+# roles/verification/tasks/boot.yml
+# GRUB password and kernel command-line parameter checks
+
+# ------------------------------------------------------------------
+# GRUB2 password
+# ------------------------------------------------------------------
+- name: Boot | Check GRUB password file
+  ansible.builtin.stat:
+    path: /boot/grub2/user.cfg
+  register: verification_grub_cfg
+
+- name: Boot | Report GRUB status
+  ansible.builtin.debug:
+    msg: "{{ 'PASS: GRUB2 password configured' if verification_grub_cfg.stat.exists else 'WARN: GRUB2 password not yet configured' }}"
+
+# ------------------------------------------------------------------
+# Kernel command-line audit parameter
+# ------------------------------------------------------------------
+- name: Boot | Read kernel cmdline
+  ansible.builtin.slurp:
+    src: /proc/cmdline
+  register: verification_cmdline
+
+- name: Boot | Report audit kernel parameter
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'PASS: audit=1 in kernel cmdline'
+         if 'audit=1' in (verification_cmdline.content | b64decode)
+         else 'WARN: audit=1 not in cmdline (reboot required)' }}

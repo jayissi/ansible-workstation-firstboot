@@ -1,0 +1,19 @@
+---
+profile: production
+
+offline: true
+
+enable_list:
+  - jinja[template-extension]
+
+loop_var_prefix: "__"
+var_naming_pattern: "^[a-z_][a-z0-9_]*$"
+
+exclude_paths:
+  - .venv/
+  - .github/
+  - docs/
+  - inventory/group_vars/all/vault.yml
+  - lint/Containerfile.lint
+  - roles/linux-system-roles.*
+  - roles/willshersystems.*

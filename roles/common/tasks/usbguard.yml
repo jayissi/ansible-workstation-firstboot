@@ -1,0 +1,33 @@
+---
+# USBGuard configuration
+
+- name: Usbguard | Generate USBGuard policy
+  ansible.builtin.command:
+    cmd: usbguard generate-policy
+  register: common_usbguard_policy
+  changed_when: false
+
+- name: Usbguard | Deploy USBGuard rules
+  ansible.builtin.copy:
+    content: "{{ common_usbguard_policy.stdout }}\n"
+    dest: /etc/usbguard/rules.conf
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Restart usbguard
+
+- name: Usbguard | Configure USBGuard daemon
+  ansible.builtin.lineinfile:
+    path: /etc/usbguard/usbguard-daemon.conf
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+  loop:
+    - {regexp: "^IPCAllowedGroups=", line: "IPCAllowedGroups=wheel"}
+    - {regexp: "^AuditBackend=", line: "AuditBackend=LinuxAudit"}
+  notify: Restart usbguard
+
+- name: Usbguard | Enable and start USBGuard
+  ansible.builtin.systemd:
+    name: usbguard
+    state: started
+    enabled: true

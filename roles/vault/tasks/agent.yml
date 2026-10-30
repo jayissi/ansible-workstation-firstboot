@@ -1,0 +1,136 @@
+---
+# roles/vault/tasks/agent.yml
+# Configure Vault Agent for automatic certificate rotation via AppRole
+
+- name: Agent | Create Vault Agent config directory
+  ansible.builtin.file:
+    path: /etc/vault-agent.d
+    state: directory
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: "0750"
+
+- name: Agent | Deploy Vault Agent certificate template
+  ansible.builtin.template:
+    src: vault-agent-leaf-combined.tpl.j2
+    dest: "{{ vault_config_dir }}/templates/leaf-combined.tpl"
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: "0640"
+
+- name: Agent | Deploy Vault Agent proxy certificate template
+  ansible.builtin.template:
+    src: vault-agent-proxy-combined.tpl.j2
+    dest: "{{ vault_config_dir }}/templates/proxy-combined.tpl"
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: "0640"
+
+- name: Agent | Deploy cert/key split script
+  ansible.builtin.template:
+    src: vault-agent-split-cert.sh.j2
+    dest: /usr/local/bin/vault-agent-split-cert
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Agent | Deploy proxy cert/key split script
+  ansible.builtin.template:
+    src: vault-agent-split-proxy-cert.sh.j2
+    dest: /usr/local/bin/vault-agent-split-proxy-cert
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Agent | Ensure proxy cert directory exists
+  ansible.builtin.file:
+    path: "{{ vault_proxy_cert_dir }}"
+    state: directory
+    owner: "{{ vault_user }}"
+    group: root
+    mode: "0750"
+
+- name: Agent | Deploy Vault Agent configuration
+  ansible.builtin.template:
+    src: vault-agent.hcl.j2
+    dest: /etc/vault-agent.d/vault-agent.hcl
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: "0640"
+  notify: Restart vault-agent
+
+- name: Agent | Deploy vault cert reload path unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/vault-cert-reload.path
+    content: |
+      [Unit]
+      Description=Watch Vault TLS cert for rotation by Vault Agent
+
+      [Path]
+      PathModified={{ vault_tls_cert_file }}
+
+      [Install]
+      WantedBy=multi-user.target
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Agent | Deploy vault cert reload service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/vault-cert-reload.service
+    content: |
+      [Unit]
+      Description=Reload Vault after cert rotation by Vault Agent
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/bin/systemctl reload vault.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Agent | Enable and start vault cert reload watcher
+  ansible.builtin.systemd:
+    name: vault-cert-reload.path
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Agent | Deploy AppRole secret_id decrypt script
+  ansible.builtin.template:
+    src: vault-agent-secret-id.sh.j2
+    dest: /usr/local/bin/vault-agent-secret-id
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Agent | Deploy AppRole secret provisioning service
+  ansible.builtin.template:
+    src: vault-agent-secret.service.j2
+    dest: /etc/systemd/system/vault-agent-secret.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Agent | Deploy Vault Agent systemd service
+  ansible.builtin.template:
+    src: vault-agent.service.j2
+    dest: /etc/systemd/system/vault-agent.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart vault-agent
+
+- name: Agent | Enable Vault Agent services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    daemon_reload: true
+  loop:
+    - vault-agent-secret
+    - vault-agent

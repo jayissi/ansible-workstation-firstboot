@@ -1,0 +1,21 @@
+---
+# roles/verification/tasks/main.yml
+# Post-deployment read-only assertions
+
+- name: Gather service facts
+  ansible.builtin.service_facts:
+
+- name: Import hardware checks
+  ansible.builtin.import_tasks: hardware.yml
+
+- name: Import boot checks
+  ansible.builtin.import_tasks: boot.yml
+
+- name: Import network checks
+  ansible.builtin.import_tasks: network.yml
+
+- name: Import security checks
+  ansible.builtin.import_tasks: security.yml
+
+- name: Import services checks
+  ansible.builtin.import_tasks: services.yml

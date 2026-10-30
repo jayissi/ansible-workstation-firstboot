@@ -1,0 +1,9 @@
+---
+# Hadolint configuration for the lint-tooling Containerfile.
+# DL3041 (pin dnf package versions) and DL3016 (pin npm package versions)
+# are suppressed because this is a development/CI container that
+# intentionally tracks latest stable linter versions, not a production
+# application image.
+ignored:
+  - DL3041
+  - DL3016

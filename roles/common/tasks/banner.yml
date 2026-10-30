@@ -1,0 +1,11 @@
+---
+# SSH security banner
+
+- name: Banner | Deploy SSH security banner
+  ansible.builtin.copy:
+    content: "{{ common_sshd_banner }}"
+    dest: /etc/ssh/banner
+    owner: root
+    group: root
+    mode: "0644"
+  when: common_sshd_banner | length > 0

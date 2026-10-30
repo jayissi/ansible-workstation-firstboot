@@ -1,0 +1,21 @@
+---
+galaxy_info:
+  author: jayissi
+  description: Local DNS caching resolver with DNSSEC validation and DNS-over-TLS
+  license: MIT
+  min_ansible_version: '2.15'
+  platforms:
+    - name: Fedora
+      versions:
+        - all
+    - name: EL
+      versions:
+        - all
+  galaxy_tags:
+    - dns
+    - unbound
+    - dnssec
+    - security
+    - networking
+
+dependencies: []

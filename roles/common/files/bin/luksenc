@@ -1,0 +1,17 @@
+#!/bin/bash
+
+SUDO=$(command -v sudo)
+CRYPTSETUP=$(command -v cryptsetup)
+
+${SUDO} "${CRYPTSETUP}" luksFormat \
+	--hash=sha512 \
+	--key-size=512 \
+	--pbkdf=argon2id \
+	--iter-time=10000 \
+	--pbkdf-parallel=4 \
+	--verify-passphrase \
+	--pbkdf-memory=2097152 \
+	--cipher=aes-xts-plain64 \
+	"${1}"
+
+unset SUDO CRYPTSETUP

@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  role_name: common
+  author: jayissi
+  description: Base system setup for workstation firstboot
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Fedora
+      versions:
+        - all
+  license: MIT
+
+dependencies: []
+
+collections:
+  - ansible.builtin
+  - community.general

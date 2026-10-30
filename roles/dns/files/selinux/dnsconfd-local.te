@@ -1,0 +1,24 @@
+policy_module(dnsconfd-local, 1.0.0)
+
+# Temporary upstream-bug workaround for dnsconfd-selinux package.
+# dnsconfd_t needs to read SSSD's public passwd cache and write to
+# its NSS socket for user/group resolution. Track upstream fix and
+# remove this module when dnsconfd-selinux ships the fix.
+# See: docs/KNOWN_ISSUES.md
+
+require {
+    type dnsconfd_t;
+    type sssd_public_t;
+    type sssd_var_lib_t;
+    class file { read getattr open map };
+    class dir { search getattr };
+    class sock_file { write getattr };
+}
+
+# Allow dnsconfd to read SSSD's public passwd cache
+allow dnsconfd_t sssd_public_t:file { read getattr open map };
+allow dnsconfd_t sssd_public_t:dir { search getattr };
+
+# Allow dnsconfd to write to SSSD's NSS socket
+allow dnsconfd_t sssd_var_lib_t:sock_file { write getattr };
+allow dnsconfd_t sssd_var_lib_t:dir { search getattr };

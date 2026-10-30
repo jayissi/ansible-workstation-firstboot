@@ -1,0 +1,23 @@
+# {{ ansible_managed }}
+# Nginx reverse proxy: https://{{ proxy_server_name }} -> Vault :8200
+
+server {
+    listen {{ proxy_listen_address }}:{{ proxy_listen_port }} ssl;
+    server_name {{ proxy_server_name }};
+
+    ssl_certificate     {{ proxy_tls_cert }};
+    ssl_certificate_key {{ proxy_tls_key }};
+    ssl_protocols       {{ proxy_tls_protocols }};
+
+    location / {
+        proxy_pass {{ proxy_backend_url }};
+        proxy_ssl_verify on;
+        proxy_ssl_trusted_certificate {{ proxy_tls_ca }};
+        proxy_ssl_server_name on;
+        proxy_ssl_name {{ proxy_server_name }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}

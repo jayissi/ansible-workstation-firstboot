@@ -1,0 +1,21 @@
+---
+galaxy_info:
+  author: jayissi
+  description: Authselect + PAM hardening with Vault SSH OTP integration
+  license: MIT
+  min_ansible_version: '2.15'
+  platforms:
+    - name: Fedora
+      versions:
+        - all
+    - name: EL
+      versions:
+        - all
+  galaxy_tags:
+    - auth
+    - pam
+    - security
+    - hardening
+    - vault
+
+dependencies: []

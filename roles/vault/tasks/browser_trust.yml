@@ -1,0 +1,59 @@
+---
+# roles/vault/tasks/browser_trust.yml
+# Add Vault Root CA to system and browser trust stores
+
+- name: Browser Trust | Add Root CA to system trust store
+  ansible.builtin.copy:
+    src: "{{ vault_cert_dir }}/root.crt"
+    dest: /etc/pki/ca-trust/source/anchors/vault-root-ca.crt
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Update ca trust
+    - Import Root CA into Chrome/Chromium NSS database
+
+# Both handlers above need to apply right now, not deferred to end of
+# play, since later tasks expect the system/NSS trust stores to already
+# include this CA. Previously these ran as unconditional regular tasks
+# (changed_when: true, no gating) and reported "changed" on every single
+# deploy even when the anchor file hadn't changed -- confirmed via
+# runtime testing. Routing through notify + flush gives the same
+# "run immediately" behavior while staying correctly idempotent (only
+# fires when the copy task above actually changed the anchor file).
+- name: Browser Trust | Apply CA trust store updates immediately
+  ansible.builtin.meta: flush_handlers
+
+- name: Browser Trust | Create Firefox policies directory
+  ansible.builtin.file:
+    path: /etc/firefox/policies
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Browser Trust | Deploy Firefox enterprise policy (CA trust + DoH disable + uBlock Origin)
+  ansible.builtin.copy:
+    dest: /etc/firefox/policies/policies.json
+    content: |
+      {
+        "policies": {
+          "Certificates": {
+            "ImportEnterpriseRoots": true
+          },
+          "DNSOverHTTPS": {
+            "Enabled": false,
+            "Locked": true
+          },
+          "ExtensionSettings": {
+            "uBlock0@raymondhill.net": {
+              "installation_mode": "force_installed",
+              "install_url": "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi"
+            }
+          }
+        }
+      }
+    owner: root
+    group: root
+    mode: "0644"

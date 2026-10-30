@@ -1,0 +1,43 @@
+---
+# Checkov configuration for ansible-workstation-firstboot.
+#
+# Scope: only our own roles (common, vault, verification) and playbooks are
+# scanned. Vendored, gitignored Galaxy roles (ansible-galaxy role install
+# -p roles/) are excluded the same way ansible-lint/yamllint already
+# exclude them (see .ansible-lint exclude_paths, .yamllint.yml ignore) --
+# they are not our code and we do not maintain them.
+skip-path:
+  - 'roles/(linux-system-roles\.|willshersystems\.)'
+
+framework:
+  - ansible
+
+# Narrowly-scoped, documented exceptions (not a blanket suppression):
+#
+# CKV_ANSIBLE_1  "Ensure that certificate validation isn't disabled with uri"
+# CKV2_ANSIBLE_1 "Ensure that HTTPS url is used with uri"
+#   All flagged tasks talk to Vault at {{ vault_addr }} = https://127.0.0.1:8200
+#   -- loopback only, never traverses a network segment where MITM is
+#   feasible. validate_certs: false is architecturally required during
+#   bootstrap (roles/vault/tasks/tls_bootstrap.yml, init.yml): Vault's
+#   self-signed bootstrap cert has no CA chain yet to validate against.
+#   checkov's static scanner also cannot resolve the {{ vault_addr }}
+#   Jinja variable to see it already is an https:// URL, hence
+#   CKV2_ANSIBLE_1 false-positives on every call. See README.md Security
+#   Posture section.
+#
+# CKV2_ANSIBLE_3 "Ensure block is handling task errors properly"
+#   Flags three blocks: "Process Vault init output" (init.yml), "Configure
+#   AppRole auth" and "Generate and store GRUB hash" (pki_engine.yml).
+#   These are intentional fail-fast critical-setup sequences (Vault init,
+#   unseal-key generation/encryption, AppRole bootstrap, GRUB password
+#   generation). A generic rescue: block here would mask a failure in the
+#   middle of initializing security-critical state (e.g. a half-unsealed
+#   Vault) rather than surfacing it -- the opposite of safe error handling.
+skip-check:
+  - CKV_ANSIBLE_1
+  - CKV2_ANSIBLE_1
+  - CKV2_ANSIBLE_3
+
+compact: true
+quiet: true

@@ -1,0 +1,10 @@
+{{ ansible_managed | default('Ansible managed') | comment }}
+
+[Unit]
+Description=Watch Nginx proxy cert for rotation by Vault Agent
+
+[Path]
+PathModified={{ proxy_tls_cert }}
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,39 @@
+{{ ansible_managed | default('Ansible managed') | comment }}
+# Narrow SSH-credential-issuance gateway for the bastion. Vault itself
+# stays loopback-only (vault.hcl); only these two specific write paths
+# are exposed, nothing else. See docs/decisions/ADR-0006.
+
+server {
+    listen {{ proxy_ssh_gateway_listen_address }}:{{ proxy_ssh_gateway_port }} ssl;
+    server_name vault-ssh-gateway.local;
+
+    ssl_certificate     {{ proxy_tls_cert }};
+    ssl_certificate_key {{ proxy_tls_key }};
+    ssl_protocols       {{ proxy_tls_protocols }};
+
+    location /v1/ssh-otp/creds/ {
+        proxy_pass {{ proxy_backend_url }};
+        proxy_ssl_verify on;
+        proxy_ssl_trusted_certificate {{ proxy_tls_ca }};
+        proxy_ssl_server_name on;
+        # Without this, nginx validates Vault's cert against the literal
+        # proxy_backend_url host (127.0.0.1), which isn't a SAN on Vault's
+        # cert (issued for vault_local_hostname) -- causes every request
+        # to fail with 502 "upstream SSL certificate does not match
+        # 127.0.0.1" (confirmed via runtime testing). vault-proxy.conf.j2
+        # already sets this; this file was missing it.
+        proxy_ssl_name {{ proxy_server_name }};
+        proxy_set_header X-Vault-Token $http_x_vault_token;
+    }
+    location /v1/ssh-ca/sign/ {
+        proxy_pass {{ proxy_backend_url }};
+        proxy_ssl_verify on;
+        proxy_ssl_trusted_certificate {{ proxy_tls_ca }};
+        proxy_ssl_server_name on;
+        proxy_ssl_name {{ proxy_server_name }};
+        proxy_set_header X-Vault-Token $http_x_vault_token;
+    }
+    location / {
+        return 403;
+    }
+}

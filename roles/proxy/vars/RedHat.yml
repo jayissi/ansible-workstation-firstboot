@@ -1,0 +1,7 @@
+---
+__proxy_packages:
+  - 'nginx'
+
+__proxy_service_name: 'nginx.service'
+__proxy_config_dir: '/etc/nginx'
+__proxy_conf_d_dir: '/etc/nginx/conf.d'

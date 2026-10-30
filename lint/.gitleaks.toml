@@ -1,0 +1,19 @@
+# Gitleaks configuration for ansible-workstation-firstboot.
+# Default rules apply automatically; only project-specific allowlist
+# entries are declared here.
+
+title = "ansible-workstation-firstboot gitleaks config"
+
+[allowlist]
+  description = "Known non-secret placeholders and expected patterns"
+
+  # The vault_admin_passphrase placeholder in inventory/group_vars/all/vault.yml
+  # is a documented default that admins MUST change and ansible-vault encrypt
+  # before production use. It is not a real secret.
+  regexTarget = "line"
+  paths = [
+    '''\.secrets\.baseline$''',
+  ]
+  regexes = [
+    '''changeme-encrypt-this-file-with-ansible-vault''',
+  ]

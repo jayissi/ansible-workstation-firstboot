@@ -1,0 +1,243 @@
+policy_module(vault, 1.3.0)
+
+########################################
+#
+# Declarations
+#
+
+type vault_t;
+
+# Mapped to the /usr/bin/vault binary/process
+type vault_exec_t;
+
+## init_daemon_domain
+###  Create a domain for long running processes
+###  (daemons/services) which are started by init scripts.
+init_daemon_domain(vault_t, vault_exec_t)
+
+# Mapped to the /etc/vault.d folder
+type vault_conf_t;
+files_type(vault_conf_t)
+
+# Mapped to the /opt/vault folder
+type vault_sys_content_t;
+files_type(vault_sys_content_t)
+
+# Mapped to the /var/log/vault folder and /var/log/vault_audit.log
+type vault_log_t;
+files_type(vault_log_t)
+
+# Mapped to tcp:8201
+type vault_cluster_port_t;
+corenet_port(vault_cluster_port_t)
+
+# If you uncomment the below - this changes enforcement to permissive
+# i.e. selinux will audit but not block
+#permissive vault_t;
+
+########################################
+#
+# vault local policy
+#
+
+require {
+	type vault_t;
+	type vault_conf_t;
+	type vault_sys_content_t;
+	type vault_log_t;
+	type kernel_t; # Needed for /dev/log
+	type unreserved_port_t;
+	type httpd_config_t; # Vault Agent writes proxy certs to /etc/nginx/certs/
+	type syslogd_var_run_t; # Vault writes to syslog socket (/dev/log)
+	type init_t; # systemd reads vault_conf_t for vault-cert-reload.path
+	class netlink_route_socket { bind create getattr nlmsg_read read write };
+	class tcp_socket { accept bind connect create getattr getopt listen setopt read write };
+	class unix_dgram_socket { bind create getattr setopt connect sendto };
+	class file { create getattr lock map open read write };
+	class dir { add_name create getattr open read write search };
+}
+
+# read-write file permissions on anonymous pipes
+allow vault_t self:fifo_file rw_fifo_file_perms;
+
+# We now need to be able to create socket permissions in itself
+allow vault_t self:unix_stream_socket create_stream_socket_perms;
+# and network sockets too
+allow vault_t self:netlink_route_socket { bind create getattr nlmsg_read };
+allow vault_t self:unix_dgram_socket { bind create getattr setopt connect sendto };
+allow vault_t self:tcp_socket { accept bind create getattr listen setopt read write };
+allow vault_t unreserved_port_t:tcp_socket name_connect;
+# Allow to write to /dev/log
+allow vault_t kernel_t:unix_dgram_socket sendto;
+# allow outbound network connectivity (for node to node comms)
+allow vault_t self:tcp_socket { connect getopt };
+
+# Allow binding to ports
+corenet_tcp_bind_generic_node(vault_t)
+# trivnet1 is configured as 8200 - hence we need to allow binding to trivnet1
+corenet_tcp_bind_trivnet1_port(vault_t)
+# and allowing connecting to it too
+corenet_tcp_connect_trivnet1_port(vault_t)
+# # unreserved allowes for 8201 - which isn't configured like 8200
+# corenet_tcp_bind_unreserved_ports(vault_t)
+# # and connect to them too
+# corenet_tcp_connect_unreserved_ports(vault_t)
+#
+# We've added the vault_cluster_port_t and package tasks should run the following to label
+# $ semanage port -a -t vault_cluster_port_t -p tcp 8201
+allow vault_t vault_cluster_port_t:tcp_socket { name_bind name_connect };
+
+kernel_read_net_sysctls(vault_t)
+kernel_search_network_sysctl(vault_t)
+
+#!!!! This avc has a dontaudit rule in the current policy
+allow vault_t self:netlink_route_socket { read write };
+
+## domain_use_interactive_fds
+###  Inherit and use file descriptors from
+###  domains with interactive programs.
+domain_use_interactive_fds(vault_t)
+
+#xntrik - don't think this is needed
+#files_read_etc_files(vault_t)
+
+## miscfiles_read_localization
+###  Allow process to read localization information.
+miscfiles_read_localization(vault_t)
+
+## dev_read_sysfs
+###  Allow the specified domain to read the contents of
+###  the sysfs filesystem.  This filesystem contains
+###  information, parameters, and other settings on the
+###  hardware installed on the system.
+##
+## This was needed for Fedora (but apparently not CentOS)
+## Although Vault seems to function even without the perm
+dev_read_sysfs(vault_t)
+
+## init_nnp_daemon_domain
+###  Allow SELinux Domain trasition from sytemd
+###  into confined domain with NoNewPrivileges
+###  Systemd Security feature.
+init_nnp_daemon_domain(vault_t)
+
+
+# Need to access conf files (read config, write certs for Agent rotation)
+allow vault_t vault_conf_t:file { create getattr setattr open read write rename unlink };
+allow vault_t vault_conf_t:dir { search add_name remove_name write getattr read open };
+
+# Vault Agent writes proxy cert files to /etc/nginx/certs/ (httpd_config_t)
+# via vault-agent-split-proxy-cert. Separate leaf cert for Nginx (vault.local
+# SAN only), isolating Nginx's TLS identity from Vault's.
+allow vault_t httpd_config_t:file { create getattr setattr open write rename unlink };
+allow vault_t httpd_config_t:dir { search add_name remove_name write getattr open };
+
+## auth_read_passwd
+###  Read the passwd passwords file (/etc/passwd)
+###  Allow to use sss nsswitch module for passwd and group.
+###  Allow to use systemd nsswitch module for passwd and group
+###  which is used for dynamic users.
+auth_read_passwd(vault_t)
+
+# Warning: corecmd_exec_ls() has been deprecated, please use corecmd_exec_bin() instead.
+#corecmd_exec_ls(vault_t)
+corecmd_exec_bin(vault_t)
+
+# Vault Agent's template "command" hook (e.g. "systemctl reload vault")
+# spawns via /usr/bin/sh, which is typed shell_exec_t -- a distinct type
+# from bin_t, so corecmd_exec_bin() above does not cover it. Confirmed by
+# runtime evidence: setting vault_t permissive eliminated "fork/exec
+# /usr/bin/sh: permission denied"; ausearch did not surface the denial
+# (likely an audit pipeline artifact), but the permissive-domain test is
+# authoritative.
+corecmd_exec_shell(vault_t)
+
+## kernel_read_sys
+###  Allows caller to read system state information in /proc.
+kernel_read_system_state(vault_t)
+
+
+# Need to access data files. remove_name is required (in addition to
+# unlink on the file class below) for Vault Agent to delete the AppRole
+# secret_id file after reading it (remove_secret_id_file_after_reading).
+allow vault_t vault_sys_content_t:dir { add_name remove_name create getattr open read write search };
+allow vault_t vault_sys_content_t:file { create getattr setattr lock map open read write rename unlink };
+
+# Need to access log files
+allow vault_t vault_log_t:dir { getattr search write add_name };
+allow vault_t vault_log_t:file { create append open setattr };
+
+# Needs this for logging
+logging_create_devlog_dev(vault_t)
+
+# Allow write to syslog socket (syslogd_var_run_t) for structured logging
+allow vault_t syslogd_var_run_t:sock_file { write getattr };
+
+# Allow access to cgroup filesystem (Vault 2.x reads cgroup info for resource limits)
+require {
+	type cgroup_t;
+	type tmp_t;
+	type init_t;
+}
+allow vault_t cgroup_t:dir { search read getattr open };
+allow vault_t cgroup_t:file { read getattr open };
+
+# Allow ipc_lock capability (memory locking for mlock/disable_mlock=false)
+allow vault_t self:capability { ipc_lock sys_resource };
+
+# Allow writing to tmp directories (PrivateTmp=yes, Go runtime creates temp dirs)
+allow vault_t tmp_t:dir { write add_name remove_name rmdir setattr create getattr search read open };
+allow vault_t tmp_t:file { write create getattr open read unlink };
+allow vault_t tmp_t:sock_file { write create unlink getattr setattr };
+
+# Allow systemd notify socket communication
+allow vault_t init_t:unix_dgram_socket sendto;
+allow vault_t init_t:unix_stream_socket { read write };
+
+# Allow systemd (init_t) to read vault_conf_t files. Required by the
+# vault-cert-reload.path unit which watches /etc/vault.d/certs/server-chain.crt
+# for cert rotation (PathModified).
+allow init_t vault_conf_t:file { getattr read open };
+allow init_t vault_conf_t:dir { search getattr };
+
+# Allow systemd notify/readiness socket access (init_var_run_t)
+# Vault 2.x uses NOTIFY_SOCKET for sd_notify() readiness and internal IPC
+require {
+	type init_var_run_t;
+}
+allow vault_t init_var_run_t:sock_file { write getattr };
+allow vault_t init_var_run_t:dir { search getattr };
+
+# Allow socket operations for IPC
+allow vault_t self:unix_stream_socket connectto;
+
+## <desc>
+## <p>
+## Allow vault servers to send outbound DNS
+## typically used to resolve DNS.
+## </p>
+## </desc>
+gen_tunable(vault_outbound_udp_dns, false)
+tunable_policy(`vault_outbound_udp_dns',`
+  require {
+    class udp_socket { connect create getattr read setopt write };
+    type vault_t;
+  }
+  allow vault_t self:udp_socket { connect create getattr read setopt write };
+  sysnet_read_config(vault_t)
+')
+
+## <desc>
+## <p>
+## Allow vault servers to connect
+## to external HTTP servers.
+## </p>
+## </desc>
+gen_tunable(vault_outbound_http, false)
+tunable_policy(`vault_outbound_http',`
+  require {
+    type vault_t;
+  }
+  corenet_tcp_connect_http_port(vault_t)
+  miscfiles_read_generic_certs(vault_t)
+')

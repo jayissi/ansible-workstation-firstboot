@@ -1,0 +1,23 @@
+#!/bin/bash
+
+set -euo pipefail
+
+SUDO=$(command -v sudo)
+GPG=$(command -v gpg)
+
+if [[ $# -ne 2 ]]; then
+	echo "Usage: $0 <input-file> <output-file>"
+	exit 1
+fi
+
+"${SUDO}" "${GPG}" \
+	--decrypt \
+	--cipher-algo AES256 \
+	--s2k-digest-algo SHA512 \
+	--s2k-mode 3 \
+	--s2k-count 65011712 \
+	--armor \
+	--output "${2}" \
+	"${1}"
+
+unset SUDO GPG

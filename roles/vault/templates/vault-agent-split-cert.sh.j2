@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Split Vault Agent's combined cert+key render (one pkiCert issue call) into
+# the separate files Vault's listener stanza requires, then reload Vault.
+# Splitting a SINGLE combined render guarantees the key always matches the
+# cert -- unlike two independent "template" stanzas, which each trigger
+# their own pki_int/issue call and can race, producing a mismatched pair.
+
+set -euo pipefail
+
+COMBINED="{{ vault_agent_run_dir }}/leaf-combined.tmp"
+CERT_OUT="{{ vault_tls_cert_file }}"
+KEY_OUT="{{ vault_tls_key_file }}"
+
+[ -f "${COMBINED}" ] || { echo "No combined render found" >&2; exit 1; }
+
+awk '/-----BEGIN VAULT-AGENT-CERT-----/{f=1;next} /-----BEGIN VAULT-AGENT-KEY-----/{f=0;next} f' \
+  "${COMBINED}" > "${CERT_OUT}.new"
+awk '/-----BEGIN VAULT-AGENT-KEY-----/{f=1;next} f' \
+  "${COMBINED}" > "${KEY_OUT}.new"
+
+chmod 0444 "${CERT_OUT}.new"
+chmod 0400 "${KEY_OUT}.new"
+mv -f "${CERT_OUT}.new" "${CERT_OUT}"
+mv -f "${KEY_OUT}.new" "${KEY_OUT}"
+
+# Vault reload is handled by the systemd vault-cert-reload.path unit
+# which watches the cert file for changes (PathModified).

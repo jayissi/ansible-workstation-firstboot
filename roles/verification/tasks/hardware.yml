@@ -1,0 +1,63 @@
+---
+# roles/verification/tasks/hardware.yml
+# TPM2 and LUKS encryption checks
+
+# ------------------------------------------------------------------
+# TPM2
+# ------------------------------------------------------------------
+- name: Hardware | Check TPM2 device
+  ansible.builtin.stat:
+    path: /dev/tpmrm0
+  register: verification_tpm2
+
+- name: Hardware | Assert TPM2 device
+  ansible.builtin.assert:
+    that: verification_tpm2.stat.exists
+    quiet: true
+    success_msg: "PASS: TPM2 device present"
+    fail_msg: "FAIL: TPM2 device /dev/tpmrm0 not found"
+
+# ------------------------------------------------------------------
+# LUKS
+# ------------------------------------------------------------------
+- name: Hardware | Detect root device
+  ansible.builtin.command:
+    cmd: findmnt -n -o SOURCE /
+  register: verification_root_src
+  changed_when: false
+
+# A single lsblk PKNAME hop only finds the *immediate* parent. On the
+# standard Fedora "LUKS under LVM" layout (LUKS partition -> LVM PV/VG ->
+# root LV), the immediate parent of the root LV is the decrypted dm-crypt
+# mapper device, not the LUKS-formatted partition -- cryptsetup isLuks on
+# that mapper device always reports "not LUKS" (it's the decrypted output,
+# the header lives one more hop up). Confirmed via runtime testing: this
+# produced a false "NOT LUKS encrypted" WARN on a root volume that was
+# genuinely LUKS2-encrypted. `lsblk -s` (inverse/ancestor mode) walks the
+# *entire* ancestor chain in one call, so this finds the LUKS layer
+# regardless of how many layers (LVM, no LVM, etc.) sit in between.
+- name: Hardware | Walk block device ancestry for any LUKS layer
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      lsblk -n -o NAME,FSTYPE -s {{ verification_root_src.stdout | trim }}
+      | awk '$2=="crypto_LUKS"{print $1}'
+      | tr -dc 'a-zA-Z0-9'
+  register: verification_luks_parent
+  changed_when: false
+  failed_when: false
+
+- name: Hardware | Check LUKS encryption
+  ansible.builtin.command:
+    cmd: "cryptsetup isLuks /dev/{{ verification_luks_parent.stdout | trim }}"
+  register: verification_luks
+  changed_when: false
+  failed_when: false
+  when: verification_luks_parent.stdout | trim | length > 0
+
+- name: Hardware | Report LUKS status
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'PASS: Root volume is LUKS encrypted'
+         if (verification_luks_parent.stdout | trim | length > 0 and verification_luks.rc == 0)
+         else 'WARN: Root volume is NOT LUKS encrypted' }}

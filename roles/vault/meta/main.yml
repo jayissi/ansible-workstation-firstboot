@@ -1,0 +1,18 @@
+---
+galaxy_info:
+  role_name: vault
+  author: jayissi
+  description: HashiCorp Vault CE deployment with TLS PKI (ECDSA/Ed25519)
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Fedora
+      versions:
+        - all
+  license: MIT
+
+dependencies:
+  - role: common
+
+collections:
+  - community.crypto
+  - community.general

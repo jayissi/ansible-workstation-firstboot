@@ -1,0 +1,463 @@
+---
+# =============================================================================
+# Ansible Workstation Firstboot -- Four-Phase Master Playbook
+# =============================================================================
+#
+# Phase 0: Detect SELinux user context for correct sudo flags
+# Phase 1: Bootstrap -- base system + Vault CE (secrets backbone)
+# Phase 2: Harden   -- system roles pulling secrets from Vault
+# Phase 3: Finalize -- AIDE baseline (LAST) + verification assertions
+# Phase 4: Reboot   -- conditional reboot if changes require it
+
+# =====================================================================
+# Phase 0: Detect SELinux context (sets become_flags for all phases)
+# =====================================================================
+- name: "Phase 0: Detect SELinux context"
+  hosts: workstation
+  gather_facts: false
+  tasks:
+    # Fix stale SELinux context on ansible remote_tmp after reboot.
+    # After Phase 2 hardening maps the admin to staff_u, the next
+    # SSH login transitions to sysadm_t. The /root/.ansible/tmp dir
+    # created during the previous (unconfined_u) run has admin_home_t
+    # context which sysadm_t can't write to. This raw task fixes it
+    # before Gathering Facts needs the dir. Idempotent on every run.
+    - name: Ensure ansible remote tmp is accessible
+      ansible.builtin.raw: >-
+        sudo mkdir -p /root/.ansible/tmp &&
+        sudo chmod 700 /root/.ansible/tmp &&
+        sudo restorecon -F /root/.ansible/tmp 2>/dev/null || true
+      become: false
+      changed_when: false
+      tags: always
+
+    - name: Get current SELinux user
+      ansible.builtin.command:
+        cmd: id -Z
+      register: selinux_context
+      changed_when: false
+      become: false
+      tags: always
+
+    - name: Set sudo flags based on SELinux user
+      ansible.builtin.set_fact:
+        ansible_become_flags: >-
+          {{ '-H -S -n -r sysadm_r -t sysadm_t'
+             if 'staff_u' in selinux_context.stdout
+             else '-H -S -n' }}
+      tags: always
+
+# =====================================================================
+# Phase 1: Bootstrap
+# =====================================================================
+- name: "Phase 1: Bootstrap -- base system and Vault CE"
+  hosts: workstation
+  become: true
+  roles:
+    - role: common
+      tags:
+        - common
+        - bootstrap
+    - role: dns
+      tags:
+        - dns
+        - bootstrap
+    - role: avahi
+      tags:
+        - avahi
+        - bootstrap
+    - role: vault
+      tags:
+        - vault
+        - bootstrap
+    - role: proxy
+      tags:
+        - proxy
+        - bootstrap
+
+# =====================================================================
+# Phase 2: Harden -- dependency-aware tier ordering
+# =====================================================================
+- name: "Phase 2: Harden -- security hardening with secrets from Vault"
+  hosts: workstation
+  become: true
+  pre_tasks:
+    # Phase 1 may end with a pending "Restart vault" handler (e.g. after a
+    # genuine SELinux policy change). Handlers fire at the end of Phase 1's
+    # play, and Phase 2 starts immediately after, so without this guard the
+    # GRUB-hash fetch below can race a still-restarting Vault and fail with
+    # "Connection refused".
+    - name: Wait for Vault to be responsive before proceeding
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/sys/health"
+        validate_certs: false
+        status_code:
+          - 200
+          - 429
+          - 472
+          - 473
+          - 501
+          - 503
+      register: _vault_health_check
+      until: _vault_health_check.status | default(-1) in [200, 429, 472, 473, 501, 503]
+      retries: 30
+      delay: 2
+      tags:
+        - always
+
+    # Same TPM2-under-sysadm_t limitation as roles/vault/tasks/init.yml:
+    # TPM2 device access fails for staff_u admins transitioned to sysadm_t,
+    # so fall back to the passphrase-encrypted backup for Ansible-driven
+    # re-reads.
+    - name: Attempt plaintext root token read (first run only)
+      ansible.builtin.slurp:
+        src: /root/.vault-root-token
+      register: _vault_token_plain
+      failed_when: false
+      no_log: true
+      tags:
+        - always
+
+    - name: Attempt TPM2+age root token decrypt
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          systemd-creds decrypt --name=vault-age-identity \
+            /etc/credstore.encrypted/vault-age-identity.cred - | \
+            age -d -i - /root/.vault-root-token.age
+      register: _vault_token_tpm2
+      no_log: true
+      changed_when: false
+      failed_when: false
+      when: _vault_token_plain.content is not defined
+      tags:
+        - always
+
+    - name: Attempt passphrase-based root token decrypt
+      ansible.builtin.expect:
+        command: >-
+          age -d -o /opt/vault/run/root-token-pass.tmp
+          /root/.vault-root-token.age.pass
+        responses:
+          "[Ee]nter passphrase": "{{ vault_admin_passphrase }}"
+        timeout: 15
+      no_log: true
+      changed_when: false
+      failed_when: false
+      when:
+        - _vault_token_plain.content is not defined
+        - (_vault_token_tpm2.stdout | default('')) | trim | length == 0
+        - vault_admin_passphrase is defined and vault_admin_passphrase | length > 0
+      tags:
+        - always
+
+    # age writes the decrypted token cleanly to a file (not stdout) so the
+    # interactive passphrase prompt text and pty escape codes captured by
+    # ansible.builtin.expect never get mixed into the actual secret value.
+    - name: Read passphrase-decrypted root token from temp file
+      ansible.builtin.slurp:
+        src: /opt/vault/run/root-token-pass.tmp
+      register: _vault_token_pass_file
+      failed_when: false
+      no_log: true
+      tags:
+        - always
+
+    - name: Shred passphrase-decrypted temp file
+      ansible.builtin.shell:
+        cmd: >-
+          shred -u /opt/vault/run/root-token-pass.tmp 2>/dev/null ||
+          rm -f /opt/vault/run/root-token-pass.tmp
+      changed_when: false
+      failed_when: false
+      tags:
+        - always
+
+    - name: Set root token fact for GRUB hash fetch
+      ansible.builtin.set_fact:
+        _vault_token_raw: >-
+          {{
+            [
+              (_vault_token_plain.content | b64decode | trim) if _vault_token_plain.content is defined else '',
+              (_vault_token_tpm2.stdout | default('')) | trim,
+              (_vault_token_pass_file.content | b64decode | trim) if _vault_token_pass_file.content is defined else ''
+            ] | select('truthy') | first | default('')
+          }}
+      no_log: true
+      tags:
+        - always
+
+    - name: Fetch GRUB hash from Vault KV
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/{{ vault_grub_kv_path }}"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _vault_token_raw }}"
+        validate_certs: false
+        status_code:
+          - 200
+      register: _grub_kv
+      no_log: true
+      when: _vault_token_raw | trim | length > 0
+      tags:
+        - always
+
+    - name: Set bootloader password hash fact
+      ansible.builtin.set_fact:
+        bootloader_password_hash: "{{ _grub_kv.json.data.data[vault_grub_kv_key] }}"
+      no_log: true
+      when: _grub_kv is defined and _grub_kv.status | default(0) == 200
+      tags:
+        - always
+
+    - name: Build SSH firewall rich rules from allowed sources
+      ansible.builtin.set_fact:
+        firewall_rich_rules: >-
+          {{
+            ['rule family="ipv4" source address="127.0.0.1" port port="8200" protocol="tcp" accept',
+             'rule family="ipv4" source address="127.0.0.1" port port="8201" protocol="tcp" accept',
+             'rule family="ipv4" port port="853" protocol="tcp" accept',
+             'rule family="ipv4" destination NOT address="127.0.0.1" port port="53" protocol="udp" drop',
+             'rule family="ipv4" destination NOT address="127.0.0.1" port port="53" protocol="tcp" drop',
+             'rule family="ipv4" source address="' ~ bastion_ip ~ '" port port="8443" protocol="tcp" accept']
+            + (ssh_allowed_sources
+               | map(attribute='ip')
+               | map('regex_replace', '^(.+)$', 'rule family="ipv4" source address="\1" service name="ssh" accept')
+               | list)
+            + ((dns_lan_enabled | default(false) | bool) | ternary(
+                ['rule family="ipv4" source address="' ~ dns_lan_subnet | default('192.168.122.0/24') ~ '" port port="53" protocol="udp" accept',
+                 'rule family="ipv4" source address="' ~ dns_lan_subnet | default('192.168.122.0/24') ~ '" port port="53" protocol="tcp" accept'],
+                []))
+          }}
+      tags:
+        - always
+
+    - name: Set THP for physical hosts only
+      ansible.builtin.set_fact:
+        kernel_settings_transparent_hugepages: never
+      when: ansible_virtualization_role | default('host') != 'guest'
+      tags:
+        - always
+
+    - name: Apply kernel sysctl settings directly on VMs
+      ansible.posix.sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        sysctl_set: true
+        reload: true
+      loop: "{{ kernel_settings_sysctl }}"
+      when: ansible_virtualization_role | default('host') == 'guest'
+      tags:
+        - kernel
+        - harden
+
+  roles:
+    # Tier 0 -- Foundation
+    - role: linux-system-roles.crypto_policies
+      tags:
+        - crypto
+        - harden
+    - role: linux-system-roles.timesync
+      tags:
+        - timesync
+        - harden
+    - role: linux-system-roles.tuned
+      vars:
+        profile: >-
+          {{ 'virtual-guest'
+             if ansible_virtualization_role | default('host') == 'guest'
+             else 'balanced' }}
+        daemon: "{{ tuned_daemon }}"
+        reapply_sysctl: "{{ tuned_reapply_sysctl }}"
+      tags:
+        - tuned
+        - kernel
+        - harden
+    - role: linux-system-roles.kernel_settings
+      tags:
+        - kernel
+        - harden
+      when: ansible_virtualization_role | default('host') != 'guest'
+    - role: linux-system-roles.journald
+      tags:
+        - journald
+        - harden
+    - role: linux-system-roles.bootloader
+      tags:
+        - bootloader
+        - harden
+    - role: linux-system-roles.certificate
+      tags:
+        - certificate
+        - harden
+    - role: linux-system-roles.systemd
+      tags:
+        - systemd
+        - harden
+
+    # Tier 1 -- depends on Tier 0
+    - role: willshersystems.sshd
+      tags:
+        - sshd
+        - harden
+    - role: fedora.linux_system_roles.auditd
+      tags:
+        - auditd
+        - harden
+    - role: linux-system-roles.tlog
+      tags:
+        - tlog
+        - harden
+
+    # Tier 2 -- depends on Tier 1
+    - role: linux-system-roles.firewall
+      tags:
+        - firewall
+        - harden
+    - role: linux-system-roles.selinux
+      tags:
+        - selinux
+        - harden
+    - role: auth
+      tags:
+        - auth
+        - harden
+
+    # Tier 3 -- LAST hardening roles
+    - role: linux-system-roles.sudo
+      tags:
+        - sudo
+        - harden
+    - role: linux-system-roles.fapolicyd
+      tags:
+        - fapolicyd
+        - harden
+
+  post_tasks:
+    # -----------------------------------------------------------------
+    # CIS 4.1.15 -- Privilege escalation audit rules
+    # Cross-field comparison (-C euid!=uid) requires the -C flag which
+    # fedora.linux_system_roles.auditd does not support via its field
+    # parameter. Deploy as a supplemental rules file.
+    #
+    # Filename note: augenrules concatenates /etc/audit/rules.d/*.rules
+    # in plain ASCII sort order, NOT by a "99 == last" convention --
+    # digits sort before lowercase letters, so a "99-" prefix actually
+    # loads BEFORE both the stock audit package's "audit.rules" stub
+    # and this project's "custom.rules" (linux_system_roles.auditd
+    # output), both of which start with "-D" (delete all rules).
+    # Confirmed via runtime testing: with the old "99-" name, these
+    # two rules were silently wiped by custom.rules' leading "-D" on
+    # every load. Using "zz-" (matches this project's existing
+    # "load/apply last" convention, e.g. zz-rpz-oisd.conf.j2 in the
+    # dns role) guarantees this file sorts after custom.rules so its
+    # rules survive.
+    # -----------------------------------------------------------------
+    - name: Deploy cross-field privilege escalation audit rules (CIS 4.1.15)
+      ansible.builtin.copy:
+        dest: /etc/audit/rules.d/zz-local-cross-field.rules
+        content: |
+          ## Privilege escalation -- CIS 4.1.15
+          ## Cross-field comparison requires -C flag (not supported by linux_system_roles.auditd)
+          -a always,exit -F arch=b64 -C euid!=uid -F auid>=1000 -F auid!=4294967295 -S execve -k priv_esc
+          -a always,exit -F arch=b32 -C euid!=uid -F auid>=1000 -F auid!=4294967295 -S execve -k priv_esc
+        owner: root
+        group: root
+        mode: "0640"
+      register: _cross_field_rules
+      notify: Load updated audit rules
+      tags:
+        - auditd
+        - harden
+
+    # Remove the stale, mis-ordered filename from earlier deploys (its
+    # rules were being silently wiped -- see note above).
+    - name: Remove stale mis-ordered cross-field rules filename
+      ansible.builtin.file:
+        path: /etc/audit/rules.d/99-local-cross-field.rules
+        state: absent
+      notify: Load updated audit rules
+      tags:
+        - auditd
+        - harden
+
+    # -----------------------------------------------------------------
+    # CIS 4.1.17 -- Audit rule immutability (compensating control)
+    # The upstream fedora.linux_system_roles.auditd template places
+    # the -e flag before rules, so auditd_enable_flag: 2 would lock
+    # the config before any rules load. This runtime command sets
+    # immutability after all rules are loaded as a compensating control.
+    # -----------------------------------------------------------------
+    - name: Set audit rules immutable at runtime (CIS 4.1.17)
+      ansible.builtin.command:
+        cmd: auditctl -e 2
+      register: _audit_immutable
+      changed_when: _audit_immutable.rc == 0
+      failed_when: false
+      tags:
+        - auditd
+        - harden
+
+    - name: Report audit immutability status
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'PASS: Audit rules set immutable (auditctl -e 2)'
+             if _audit_immutable.rc == 0
+             else 'WARN: auditctl -e 2 returned rc=' ~ _audit_immutable.rc
+               ~ ' -- ' ~ (_audit_immutable.stderr | default('unknown'))
+               ~ ' (compensating control -- will retry on next deploy)' }}
+      tags:
+        - auditd
+        - harden
+
+  handlers:
+    - name: Load updated audit rules
+      ansible.builtin.command:
+        cmd: augenrules --load
+      changed_when: true
+
+# =====================================================================
+# Phase 3: Finalize -- AIDE baseline LAST + verification
+# =====================================================================
+- name: "Phase 3: Finalize -- AIDE baseline and verification"
+  hosts: workstation
+  become: true
+  roles:
+    - role: linux-system-roles.aide
+      tags:
+        - aide
+        - finalize
+    - role: verification
+      tags:
+        - verify
+        - finalize
+
+# =====================================================================
+# Phase 4: Reboot if required
+# =====================================================================
+- name: "Phase 4: Reboot if required"
+  hosts: workstation
+  become: true
+  tags:
+    - reboot
+  tasks:
+    - name: Check if reboot is needed
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_flag
+
+    - name: Reboot to apply kernel/bootloader changes
+      ansible.builtin.reboot:
+        reboot_timeout: 300
+        msg: "Rebooting to apply security hardening changes"
+      when:
+        - reboot_ok | default(false)
+        - reboot_flag.stat.exists | default(false)
+
+    - name: Post-reboot verification
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'System rebooted successfully.'
+             if reboot_flag.stat.exists | default(false)
+             else 'No reboot required.' }}

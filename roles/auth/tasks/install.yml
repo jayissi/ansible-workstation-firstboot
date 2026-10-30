@@ -1,0 +1,55 @@
+---
+# roles/auth/tasks/install.yml
+# Install vault-ssh-helper binary
+#
+# No RPM package exists upstream for this tool (confirmed:
+# hashicorp/vault-ssh-helper#68, open since 2022, still
+# unresolved -- it is a separate GitHub project from core
+# Vault and is only distributed as a binary release). Download
+# and extract it directly from releases.hashicorp.com instead
+# of via dnf.
+
+- name: Install | Check if vault-ssh-helper binary already exists
+  ansible.builtin.stat:
+    path: /usr/bin/vault-ssh-helper
+  register: __auth_vsh_binary
+  when: auth_vault_ssh_helper_enabled | bool
+
+- name: Install | Install unzip (required to extract vault-ssh-helper release archive)
+  ansible.builtin.dnf:
+    name: unzip
+    state: present
+  when:
+    - auth_vault_ssh_helper_enabled | bool
+    - not __auth_vsh_binary.stat.exists
+
+- name: Install | Download vault-ssh-helper release archive
+  ansible.builtin.get_url:
+    url: >-
+      https://releases.hashicorp.com/vault-ssh-helper/{{ auth_vault_ssh_helper_version }}/vault-ssh-helper_{{ auth_vault_ssh_helper_version }}_linux_amd64.zip
+    checksum: "sha256:{{ auth_vault_ssh_helper_checksum }}"
+    dest: "/tmp/vault-ssh-helper_{{ auth_vault_ssh_helper_version }}_linux_amd64.zip"
+    mode: "0644"
+  when:
+    - auth_vault_ssh_helper_enabled | bool
+    - not __auth_vsh_binary.stat.exists
+
+- name: Install | Extract vault-ssh-helper binary to /usr/bin
+  ansible.builtin.unarchive:
+    src: "/tmp/vault-ssh-helper_{{ auth_vault_ssh_helper_version }}_linux_amd64.zip"
+    dest: /usr/bin
+    remote_src: true
+    mode: "0755"
+    owner: root
+    group: root
+  when:
+    - auth_vault_ssh_helper_enabled | bool
+    - not __auth_vsh_binary.stat.exists
+
+- name: Install | Remove downloaded vault-ssh-helper archive
+  ansible.builtin.file:
+    path: "/tmp/vault-ssh-helper_{{ auth_vault_ssh_helper_version }}_linux_amd64.zip"
+    state: absent
+  when:
+    - auth_vault_ssh_helper_enabled | bool
+    - not __auth_vsh_binary.stat.exists

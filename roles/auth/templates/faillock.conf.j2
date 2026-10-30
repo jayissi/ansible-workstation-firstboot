@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+# CIS RHEL 9 v3.0.0 5.3.3.1.x -- Account lockout after failed attempts
+deny = {{ auth_faillock_deny }}
+unlock_time = {{ auth_faillock_unlock_time }}
+fail_interval = {{ auth_faillock_fail_interval }}
+silent
+{% if auth_faillock_even_deny_root %}
+even_deny_root
+root_unlock_time = {{ auth_faillock_root_unlock_time }}
+{% endif %}
+dir = {{ auth_faillock_dir }}

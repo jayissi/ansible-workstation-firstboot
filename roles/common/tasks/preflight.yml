@@ -1,0 +1,84 @@
+---
+# Preflight checks -- fail fast before spending time on updates
+
+# LUKS verification
+- name: Preflight | Detect root device for LUKS check
+  ansible.builtin.command:
+    cmd: findmnt -n -o SOURCE /
+  register: common_root_source
+  changed_when: false
+  when: common_luks_root_device | length == 0
+
+- name: Preflight | Set root device fact
+  ansible.builtin.set_fact:
+    _common_luks_device: >-
+      {{ common_luks_root_device if common_luks_root_device | length > 0
+         else common_root_source.stdout }}
+
+# A single lsblk PKNAME hop only finds the *immediate* parent. On the
+# standard Fedora "LUKS under LVM" layout (LUKS partition -> LVM PV/VG ->
+# root LV), the immediate parent of the root LV is the decrypted dm-crypt
+# mapper device, not the LUKS-formatted partition -- cryptsetup isLuks on
+# that mapper device always reports "not LUKS" (it's the decrypted output;
+# the header lives one more hop up). Confirmed via runtime testing: this
+# produced a false "NOT LUKS encrypted" WARNING on a root volume that was
+# genuinely LUKS2-encrypted (same bug as roles/verification/tasks/main.yml,
+# fixed there the same way). `lsblk -s` (inverse/ancestor mode) walks the
+# *entire* ancestor chain in one call, so this finds the LUKS layer
+# regardless of how many layers (LVM, no LVM, etc.) sit in between.
+- name: Preflight | Resolve LUKS backing device
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      lsblk -n -o NAME,FSTYPE -s {{ _common_luks_device }}
+      | awk '$2=="crypto_LUKS"{print $1}'
+      | tr -dc 'a-zA-Z0-9'
+  register: common_luks_parent
+  changed_when: false
+  failed_when: false
+
+- name: Preflight | Check LUKS encryption on root volume
+  ansible.builtin.command:
+    cmd: "cryptsetup isLuks /dev/{{ common_luks_parent.stdout | trim }}"
+  register: common_luks_check
+  changed_when: false
+  failed_when: false
+  when: common_luks_parent.stdout | trim | length > 0
+
+- name: Preflight | Report LUKS encryption status
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'Root volume is LUKS encrypted.'
+         if (common_luks_parent.stdout | trim | length > 0 and common_luks_check.rc == 0)
+         else 'WARNING: Root volume is NOT LUKS encrypted.' }}
+
+# TPM2 device check (soft -- SELinux sysadm_t may block /dev/tpmrm0 access)
+- name: Preflight | Check for TPM2 device
+  ansible.builtin.stat:
+    path: /dev/tpmrm0
+  register: common_tpm2_device
+
+- name: Preflight | Report TPM2 device status
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'TPM2 device /dev/tpmrm0 is present.'
+         if common_tpm2_device.stat.exists
+         else 'WARNING: TPM2 device not found. Ensure vTPM is attached.' }}
+
+- name: Preflight | Verify systemd-creds TPM2 round-trip
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      echo "tpm2-test" | systemd-creds encrypt --with-key=tpm2 - - | \
+        systemd-creds decrypt --with-key=tpm2 - -
+  register: common_tpm2_roundtrip
+  changed_when: false
+  failed_when: false
+
+- name: Preflight | Report TPM2 systemd-creds status
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'TPM2 systemd-creds round-trip succeeded.'
+         if common_tpm2_roundtrip.rc | default(1) == 0
+         else 'INFO: TPM2 round-trip skipped (SELinux sysadm_t may block direct access.'
+              ~ ' This is normal after hardening -- vault-unseal.service uses init_t context).' }}

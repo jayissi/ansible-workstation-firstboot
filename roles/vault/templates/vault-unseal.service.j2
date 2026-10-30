@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Vault Auto-Unseal
+After=vault.service
+Requires=vault.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/usr/local/bin/vault-auto-unseal
+
+{% if vault_use_tpm2 and vault_tpm2_credential_exists | default(false) %}
+LoadCredentialEncrypted=vault-age-identity:/etc/credstore.encrypted/vault-age-identity.cred
+{% endif %}
+
+Environment=VAULT_ADDR={{ vault_addr }}
+
+[Install]
+WantedBy=vault.service multi-user.target

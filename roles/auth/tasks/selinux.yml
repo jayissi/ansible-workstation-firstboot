@@ -1,0 +1,37 @@
+---
+# roles/auth/tasks/selinux.yml
+# SELinux: compile infrastructure (mirrors dns role pattern)
+
+- name: Selinux | Install SELinux build dependencies
+  ansible.builtin.dnf:
+    name:
+      - selinux-policy-devel
+      - make
+    state: present
+
+- name: Selinux | Ensure SELinux source directory exists
+  ansible.builtin.file:
+    path: "{{ auth_selinux_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Selinux | Deploy SELinux policy source files
+  ansible.builtin.copy:
+    src: "selinux/{{ item }}"
+    dest: "{{ auth_selinux_dir }}/{{ item }}"
+    mode: "0644"
+  loop:
+    - sshd-vault-ssh-helper.te
+    - sshd-vault-ssh-helper.if
+    - sshd-vault-ssh-helper.fc
+  notify: Compile and install auth SELinux policies
+
+- name: Selinux | Check if auth SELinux modules are loaded
+  ansible.builtin.command:
+    cmd: semodule -l
+  register: __auth_selinux_modules
+  changed_when: >-
+    'sshd-vault-ssh-helper' not in __auth_selinux_modules.stdout
+  notify: Compile and install auth SELinux policies

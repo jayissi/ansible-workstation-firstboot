@@ -1,0 +1,18 @@
+---
+- name: Configure | Deploy hardened avahi-daemon configuration
+  ansible.builtin.template:
+    src: 'avahi-daemon.conf.j2'
+    dest: '{{ __avahi_config_file }}'
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart avahi
+
+# Remove the D-Bus activation mask if it exists from a previous
+# configuration where avahi was disabled. With avahi now running,
+# the mask is unnecessary and would prevent D-Bus activation.
+- name: Configure | Remove stale D-Bus activation mask
+  ansible.builtin.file:
+    path: /etc/dbus-1/system-services/org.freedesktop.Avahi.service
+    state: absent
+  when: ansible_facts['distribution'] == 'Fedora'

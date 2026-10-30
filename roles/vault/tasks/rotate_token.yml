@@ -1,0 +1,156 @@
+---
+# roles/vault/tasks/rotate_token.yml
+# Rotate the Vault root token: mint new, age-encrypt, revoke old.
+# Only runs when explicitly requested via:
+#   make vault-rotate-root-token
+#   ansible-playbook playbooks/site.yml --tags vault-rotate-token \
+#     -e vault_rotate_root_token=true
+
+- name: Rotate Token | Decrypt current root token for rotation
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      if [ -f /root/.vault-root-token ]; then
+        cat /root/.vault-root-token
+      elif [ -f /root/.vault-root-token.age ] && \
+           [ -f /etc/credstore.encrypted/vault-age-identity.cred ]; then
+        systemd-creds decrypt --name=vault-age-identity \
+          /etc/credstore.encrypted/vault-age-identity.cred - | \
+          age -d -i - /root/.vault-root-token.age
+      elif [ -f /root/.vault-root-token.age.pass ]; then
+        echo "ERROR: passphrase-only decrypt not supported in automation" >&2
+        exit 1
+      else
+        echo ""
+      fi
+  register: vault_rotate_old_token_raw
+  no_log: true
+  changed_when: false
+  failed_when: vault_rotate_old_token_raw.stdout | trim | length == 0
+
+- name: Rotate Token | Set old token fact
+  ansible.builtin.set_fact:
+    vault_rotate_old_token: "{{ vault_rotate_old_token_raw.stdout | trim }}"
+  no_log: true
+
+- name: Rotate Token | Lookup current root token accessor
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/auth/token/lookup-self"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ vault_rotate_old_token }}"
+    validate_certs: false
+    status_code:
+      - 200
+  register: vault_rotate_old_lookup
+  no_log: true
+
+- name: Rotate Token | Set old accessor fact
+  ansible.builtin.set_fact:
+    vault_rotate_old_accessor: "{{ vault_rotate_old_lookup.json.data.accessor }}"
+  no_log: true
+
+- name: Rotate Token | Mint new root-equivalent token
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/auth/token/create"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ vault_rotate_old_token }}"
+    body_format: json
+    body:
+      policies:
+        - root
+      ttl: "0"
+      no_parent: true
+      no_default_policy: true
+      display_name: "root-rotated"
+    validate_certs: false
+    status_code:
+      - 200
+  register: vault_rotate_new_token_resp
+  no_log: true
+
+- name: Rotate Token | Set new token fact
+  ansible.builtin.set_fact:
+    vault_rotate_new_token: "{{ vault_rotate_new_token_resp.json.auth.client_token }}"
+  no_log: true
+
+- name: Rotate Token | Verify new token works
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/auth/token/lookup-self"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ vault_rotate_new_token }}"
+    validate_certs: false
+    status_code:
+      - 200
+  no_log: true
+
+- name: Rotate Token | Write new token to plaintext temp file
+  ansible.builtin.copy:
+    content: "{{ vault_rotate_new_token }}\n"
+    dest: /root/.vault-root-token.tmp
+    owner: root
+    group: root
+    mode: "0400"
+  no_log: true
+
+- name: Rotate Token | Age-encrypt new root token (recipient key)
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      age -e -R "{{ vault_age_recipients_file }}" \
+        -o /root/.vault-root-token.age \
+        /root/.vault-root-token.tmp
+      chmod 0400 /root/.vault-root-token.age
+  changed_when: true
+  no_log: true
+
+- name: Rotate Token | Create passphrase-encrypted backup of new token (DR)
+  ansible.builtin.expect:
+    command: >-
+      age -e -p
+      -o /root/.vault-root-token.age.pass
+      /root/.vault-root-token.tmp
+    responses:
+      "[Ee]nter passphrase": "{{ vault_admin_passphrase }}"
+      "[Cc]onfirm passphrase": "{{ vault_admin_passphrase }}"
+    timeout: 30
+  changed_when: true
+  no_log: true
+  when: vault_admin_passphrase is defined and vault_admin_passphrase | length > 0
+
+- name: Rotate Token | Set permissions on passphrase backup
+  ansible.builtin.file:
+    path: /root/.vault-root-token.age.pass
+    owner: root
+    group: root
+    mode: "0400"
+  when: vault_admin_passphrase is defined and vault_admin_passphrase | length > 0
+
+- name: Rotate Token | Revoke old root token by accessor
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/auth/token/revoke-accessor"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ vault_rotate_new_token }}"
+    body_format: json
+    body:
+      accessor: "{{ vault_rotate_old_accessor }}"
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+  no_log: true
+
+- name: Rotate Token | Shred plaintext temp file
+  ansible.builtin.shell:
+    cmd: shred -u /root/.vault-root-token.tmp 2>/dev/null || rm -f /root/.vault-root-token.tmp
+  changed_when: false
+
+- name: Rotate Token | Root token rotation complete
+  ansible.builtin.debug:
+    msg: >-
+      Root token rotated successfully.
+      Old accessor {{ vault_rotate_old_accessor }} revoked.
+      New token age-encrypted to /root/.vault-root-token.age.

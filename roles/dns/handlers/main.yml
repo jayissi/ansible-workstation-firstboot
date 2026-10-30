@@ -1,0 +1,42 @@
+---
+- name: Reload dns systemd units
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Restart unbound
+  ansible.builtin.systemd_service:
+    name: '{{ __dns_service_name }}'
+    state: restarted
+  register: __dns_restarted
+
+# Skip reload if restart already ran — restart loads all config including
+# zone changes. Without this guard, reload fires immediately after restart
+# and fails because unbound hasn't finished starting yet.
+- name: Reload unbound
+  ansible.builtin.systemd_service:
+    name: '{{ __dns_service_name }}'
+    state: reloaded
+  when: __dns_restarted is not defined or not __dns_restarted.changed
+
+- name: Restart dnsconfd
+  ansible.builtin.systemd_service:
+    name: dnsconfd.service
+    state: restarted
+
+- name: Reload NetworkManager
+  ansible.builtin.systemd_service:
+    name: NetworkManager.service
+    state: reloaded
+
+- name: Compile and install DNS SELinux policies
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      cd {{ dns_selinux_dir }}
+      for te_file in *.te; do
+        mod_name="${te_file%.te}"
+        rm -f "${mod_name}.pp" "tmp/${mod_name}.mod" "tmp/${mod_name}.mod.fc" 2>/dev/null || true
+        make -f /usr/share/selinux/devel/Makefile "${mod_name}.pp"
+        semodule -i "${mod_name}.pp"
+      done
+  changed_when: true

@@ -1,0 +1,501 @@
+---
+# roles/vault/tasks/pki_engine.yml
+# Configure Vault PKI secrets engine with idempotent mount checks
+
+- name: Pki Engine | Set Vault token for API calls
+  ansible.builtin.set_fact:
+    _vault_token: "{{ vault_root_token }}"
+  no_log: true
+
+# ------------------------------------------------------------------
+# Audit devices (enable early so they capture everything after)
+# ------------------------------------------------------------------
+- name: Pki Engine | Check if Vault audit devices are enabled
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/audit"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    validate_certs: false
+    status_code:
+      - 200
+  register: vault_audit_devices
+
+- name: Pki Engine | Enable file audit device
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/audit/file"
+    method: PUT
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      type: file
+      options:
+        file_path: "{{ vault_log_dir }}/audit.log"
+        log_raw: "false"
+        hmac_accessor: "true"
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+  when: "'file/' not in vault_audit_devices.json"
+
+- name: Pki Engine | Enable syslog audit device
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/audit/syslog"
+    method: PUT
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      type: syslog
+      options:
+        facility: "AUTH"
+        tag: "vault-audit"
+        log_raw: "false"
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+  when: "'syslog/' not in vault_audit_devices.json"
+
+# ------------------------------------------------------------------
+# Check existing mounts for idempotency
+# ------------------------------------------------------------------
+- name: Pki Engine | Get current Vault mounts
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/mounts"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    validate_certs: false
+    status_code:
+      - 200
+  register: vault_mounts
+
+# ------------------------------------------------------------------
+# PKI Root CA
+# ------------------------------------------------------------------
+- name: Pki Engine | Enable PKI secrets engine (root)
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/mounts/pki"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      type: pki
+      config:
+        max_lease_ttl: "{{ vault_pki_root_ttl }}"
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+  when: "'pki/' not in vault_mounts.json"
+
+- name: Pki Engine | Generate Root CA
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/pki/root/generate/internal"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      common_name: "{{ vault_pki_organization }} Root CA"
+      issuer_name: "root-ca"
+      key_type: "{{ vault_pki_key_type }}"
+      organization: "{{ vault_pki_organization }}"
+      ou: "{{ vault_pki_ou }}"
+      locality: "{{ vault_pki_locality }}"
+      province: "{{ vault_pki_province }}"
+      country: "{{ vault_pki_country }}"
+      ttl: "{{ vault_pki_root_ttl }}"
+    validate_certs: false
+    status_code:
+      - 200
+  when: "'pki/' not in vault_mounts.json"
+
+# ------------------------------------------------------------------
+# PKI Intermediate CA
+# ------------------------------------------------------------------
+- name: Pki Engine | Enable PKI secrets engine (intermediate)
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/mounts/pki_int"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      type: pki
+      config:
+        max_lease_ttl: "{{ vault_pki_intermediate_ttl }}"
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+  when: "'pki_int/' not in vault_mounts.json"
+
+- name: Pki Engine | Generate Intermediate CSR
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/pki_int/intermediate/generate/internal"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      common_name: "{{ vault_pki_organization }} Intermediate CA"
+      issuer_name: "intermediate-ca"
+      key_type: "{{ vault_pki_key_type }}"
+      organization: "{{ vault_pki_organization }}"
+      ou: "{{ vault_pki_ou }}"
+      locality: "{{ vault_pki_locality }}"
+      province: "{{ vault_pki_province }}"
+      country: "{{ vault_pki_country }}"
+    validate_certs: false
+    status_code:
+      - 200
+  register: vault_pki_int_csr
+  when: "'pki_int/' not in vault_mounts.json"
+
+- name: Pki Engine | Sign Intermediate CSR with Root CA
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/pki/root/sign-intermediate"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      csr: "{{ vault_pki_int_csr.json.data.csr }}"
+      format: pem_bundle
+      ttl: "{{ vault_pki_intermediate_ttl }}"
+    validate_certs: false
+    status_code:
+      - 200
+  register: vault_pki_int_signed
+  when: "'pki_int/' not in vault_mounts.json"
+
+- name: Pki Engine | Set signed Intermediate certificate
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/pki_int/intermediate/set-signed"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      certificate: "{{ vault_pki_int_signed.json.data.certificate }}"
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+  when: "'pki_int/' not in vault_mounts.json"
+
+- name: Pki Engine | Create PKI role for leaf certificates
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/pki_int/roles/workstation-leaf"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      allowed_domains:
+        - localhost
+        - "{{ vault_local_hostname }}"
+        - "{{ ansible_hostname }}"
+        - "{{ ansible_facts.fqdn }}"
+      allow_subdomains: true
+      allow_bare_domains: true
+      allow_localhost: true
+      key_type: "{{ vault_pki_key_type }}"
+      key_bits: "{{ vault_pki_key_bits }}"
+      organization: "{{ vault_pki_organization }}"
+      ou: "{{ vault_pki_ou }}"
+      locality: "{{ vault_pki_locality }}"
+      province: "{{ vault_pki_province }}"
+      country: "{{ vault_pki_country }}"
+      max_ttl: "{{ vault_pki_leaf_max_ttl }}"
+      ttl: "{{ vault_pki_leaf_ttl }}"
+      require_cn: false
+      generate_lease: true
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+
+# ------------------------------------------------------------------
+# KV v2 secrets engine
+# ------------------------------------------------------------------
+- name: Pki Engine | Enable KV v2 secrets engine
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/mounts/secret"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      type: kv
+      options:
+        version: "2"
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+  when: "'secret/' not in vault_mounts.json"
+
+# ------------------------------------------------------------------
+# AppRole auth for Vault Agent (least-privilege cert rotation)
+# ------------------------------------------------------------------
+- name: Pki Engine | Check if AppRole auth is already enabled
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/auth"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    validate_certs: false
+    status_code:
+      - 200
+  register: vault_auth_methods
+
+- name: Pki Engine | Configure AppRole auth
+  when: "'approle/' not in vault_auth_methods.json"
+  block:
+    - name: Pki Engine | Create Vault Agent policy (cert renewal only)
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/sys/policies/acl/vault-agent-cert"
+        method: PUT
+        headers:
+          X-Vault-Token: "{{ _vault_token }}"
+        body_format: json
+        body:
+          policy: |
+            path "pki_int/issue/workstation-leaf" {
+              capabilities = ["create", "update"]
+            }
+        validate_certs: false
+        status_code:
+          - 200
+          - 204
+
+    - name: Pki Engine | Enable AppRole auth method
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/sys/auth/approle"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ _vault_token }}"
+        body_format: json
+        body:
+          type: approle
+        validate_certs: false
+        status_code:
+          - 200
+          - 204
+
+    - name: Pki Engine | Create AppRole role for Vault Agent
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/auth/approle/role/vault-agent"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ _vault_token }}"
+        body_format: json
+        body:
+          token_policies: ["vault-agent-cert"]
+          token_ttl: "1h"
+          token_max_ttl: "4h"
+          secret_id_ttl: "0"
+        validate_certs: false
+        status_code:
+          - 200
+          - 204
+
+    - name: Pki Engine | Get AppRole role_id
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/auth/approle/role/vault-agent/role-id"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _vault_token }}"
+        validate_certs: false
+        status_code:
+          - 200
+      register: vault_approle_role_id_resp
+
+    - name: Pki Engine | Save AppRole role_id
+      ansible.builtin.copy:
+        content: "{{ vault_approle_role_id_resp.json.data.role_id }}"
+        dest: "{{ vault_config_dir }}/agent-role-id"
+        owner: "{{ vault_user }}"
+        group: "{{ vault_group }}"
+        mode: "0400"
+      no_log: true
+
+    - name: Pki Engine | Generate AppRole secret_id
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/auth/approle/role/vault-agent/secret-id"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ _vault_token }}"
+        validate_certs: false
+        status_code:
+          - 200
+      register: vault_approle_secret_id_resp
+      no_log: true
+
+    - name: Pki Engine | Age-encrypt AppRole secret_id
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          printf '%s' '{{ vault_approle_secret_id_resp.json.data.secret_id }}' | \
+            age -e -R "{{ vault_age_recipients_file }}" \
+            -o /root/vault-approle-secret.age
+      changed_when: true
+      no_log: true
+
+    - name: Pki Engine | Set permissions on AppRole secret
+      ansible.builtin.file:
+        path: /root/vault-approle-secret.age
+        owner: root
+        group: root
+        mode: "0400"
+
+# ------------------------------------------------------------------
+# GRUB password hash (only generate if not already stored)
+# ------------------------------------------------------------------
+- name: Pki Engine | Check if GRUB hash already exists in Vault
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/{{ vault_grub_kv_path }}"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    validate_certs: false
+    status_code:
+      - 200
+      - 404
+  register: vault_grub_kv_check
+
+- name: Pki Engine | Generate and store GRUB hash
+  when: vault_grub_kv_check.status == 404
+  block:
+    - name: Pki Engine | Generate GRUB password
+      ansible.builtin.set_fact:
+        vault_grub_password: "{{ lookup('ansible.builtin.password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+      no_log: true
+
+    - name: Pki Engine | Generate GRUB2 PBKDF2 password hash
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          printf '%s\n' '{{ vault_grub_password }}' '{{ vault_grub_password }}' | \
+            grub2-mkpasswd-pbkdf2 --iteration-count=100000
+      register: vault_grub_hash_output
+      changed_when: true
+      no_log: true
+
+    - name: Pki Engine | Parse GRUB hash
+      ansible.builtin.set_fact:
+        vault_grub_password_hash: >-
+          {{ vault_grub_hash_output.stdout | regex_search('grub\.pbkdf2\.sha512\..*') }}
+      no_log: true
+
+    - name: Pki Engine | Store GRUB password hash in Vault KV
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/{{ vault_grub_kv_path }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ _vault_token }}"
+        body_format: json
+        body:
+          data:
+            password_hash: "{{ vault_grub_password_hash }}"
+        validate_certs: false
+        status_code:
+          - 200
+          - 204
+      no_log: true
+
+# ------------------------------------------------------------------
+# Admin policies and token
+# ------------------------------------------------------------------
+- name: Pki Engine | Create vault-admin-full policy
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/policies/acl/vault-admin-full"
+    method: PUT
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      # Least-privilege daily-ops policy. Deliberately EXCLUDES:
+      #   auth/*         -- would allow creating/deleting any auth method
+      #   sys/policies/* -- would allow rewriting this policy to grant root
+      # Both are privilege-escalation vectors and are reserved for the
+      # break-glass root token (age-encrypted + passphrase DR backup only).
+      policy: |
+        path "secret/data/*" { capabilities = ["create","read","update","delete","list"] }
+        path "secret/metadata/*" { capabilities = ["read","list","delete"] }
+        path "pki_int/certs" { capabilities = ["list"] }
+        path "pki_int/certs/*" { capabilities = ["read","list"] }
+        path "pki_int/cert/*" { capabilities = ["read"] }
+        path "pki_int/issue/workstation-leaf" { capabilities = ["create","update"] }
+        path "ssh-otp/creds/daily" { capabilities = ["create","update"] }
+        path "ssh-ca/sign/breakglass" { capabilities = ["create","update"] }
+        path "auth/approle/role/vault-agent/secret-id" { capabilities = ["create","update"] }
+        path "auth/token/lookup-self" { capabilities = ["read"] }
+        path "auth/token/renew-self" { capabilities = ["update"] }
+        path "sys/health" { capabilities = ["read"] }
+        path "sys/mounts" { capabilities = ["read"] }
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+
+- name: Pki Engine | Create vault-admin-readonly policy
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/policies/acl/vault-admin-readonly"
+    method: PUT
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      policy: |
+        path "secret/data/*" { capabilities = ["read","list"] }
+        path "pki_int/certs/*" { capabilities = ["read","list"] }
+        path "sys/health" { capabilities = ["read"] }
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+
+- name: Pki Engine | Create admin token for daily operations
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/auth/token/create"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      policies: ["vault-admin-full"]
+      display_name: "admin-daily"
+      ttl: "0"
+      no_parent: true
+      renewable: true
+    validate_certs: false
+    status_code:
+      - 200
+  register: vault_admin_token_resp
+  no_log: true
+
+- name: Pki Engine | Create read-only token for monitoring and reporting
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/auth/token/create"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      policies: ["vault-admin-readonly"]
+      display_name: "monitoring-readonly"
+      ttl: "0"
+      no_parent: true
+      renewable: true
+    validate_certs: false
+    status_code:
+      - 200
+  register: vault_readonly_token_resp
+  no_log: true

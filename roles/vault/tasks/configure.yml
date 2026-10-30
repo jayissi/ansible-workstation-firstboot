@@ -1,0 +1,89 @@
+---
+# roles/vault/tasks/configure.yml
+# Deploy vault.hcl configuration and systemd services
+
+- name: Configure | Add Vault local hostname to /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '.*{{ vault_local_hostname }}$'
+    line: "127.0.0.1   {{ vault_local_hostname }}"
+    state: present
+
+- name: Configure | Deploy vault.hcl configuration
+  ansible.builtin.template:
+    src: vault.hcl.j2
+    dest: "{{ vault_config_dir }}/vault.hcl"
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: "0640"
+  notify: Restart vault
+
+- name: Configure | Deploy Vault systemd service
+  ansible.builtin.template:
+    src: vault.service.j2
+    dest: /etc/systemd/system/vault.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart vault
+
+# Check the ACTUAL FILE on disk rather than a runtime fact that only
+# gets set during init.yml's first-run block. Without this, reruns
+# render the template without LoadCredentialEncrypted (since the fact
+# defaults to false), creating a diff against what's on disk (which
+# HAS LoadCredentialEncrypted from the first run), causing spurious
+# "changed" on every idempotent re-run.
+- name: Configure | Check if TPM2 credential exists on disk
+  ansible.builtin.stat:
+    path: /etc/credstore.encrypted/vault-age-identity.cred
+  register: vault_tpm2_cred_file
+
+- name: Configure | Deploy Vault auto-unseal systemd service
+  ansible.builtin.template:
+    src: vault-unseal.service.j2
+    dest: /etc/systemd/system/vault-unseal.service
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    vault_tpm2_credential_exists: "{{ vault_tpm2_cred_file.stat.exists }}"
+  notify:
+    - Reload systemd
+
+- name: Configure | Add Vault binary to fapolicyd trust
+  ansible.builtin.command:
+    cmd: fapolicyd-cli --file add /usr/bin/vault
+  register: vault_fapolicyd_result
+  # fapolicyd-cli's actual message when the entry already exists is
+  # "After removing duplicates, there is nothing to add" (exit code 9),
+  # not "already" -- the previous check never matched, so this always
+  # reported changed.
+  changed_when: "'nothing to add' not in vault_fapolicyd_result.stderr"
+  failed_when: false
+
+- name: Configure | Deploy vault audit logrotate configuration
+  ansible.builtin.copy:
+    dest: /etc/logrotate.d/vault-audit
+    content: |
+      {{ vault_log_dir }}/audit.log {
+          daily
+          rotate 30
+          compress
+          delaycompress
+          missingok
+          notifempty
+          create 0600 {{ vault_user }} {{ vault_group }}
+      }
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Configure | Deploy vault-auto-unseal script template
+  ansible.builtin.template:
+    src: vault-auto-unseal.sh.j2
+    dest: /usr/local/bin/vault-auto-unseal
+    owner: root
+    group: root
+    mode: "0750"

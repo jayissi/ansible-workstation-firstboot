@@ -1,0 +1,11 @@
+---
+- name: Install | Avahi packages
+  ansible.builtin.dnf:
+    name: '{{ __avahi_packages }}'
+    state: present
+
+- name: Install | NSS-mDNS packages
+  ansible.builtin.dnf:
+    name: '{{ __avahi_nss_packages }}'
+    state: present
+  when: avahi_nss_mdns_enabled | bool

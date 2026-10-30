@@ -1,0 +1,207 @@
+---
+# Deploy Unbound configuration, dnsconfd, DNSSEC anchor, and zone configs
+
+# ---------------------------------------------------------------------------
+# LAN DNS security guard -- prevent open resolver misconfiguration
+# ---------------------------------------------------------------------------
+- name: Configure | Validate LAN DNS subnet is not an open resolver
+  ansible.builtin.assert:
+    that:
+      - dns_lan_subnet is defined and dns_lan_subnet | length > 0
+      - dns_lan_subnet != '0.0.0.0/0'
+      - dns_lan_subnet | ansible.utils.ipaddr('prefix') | int >= 8
+    fail_msg: >-
+      SECURITY: dns_lan_subnet={{ dns_lan_subnet | default('undefined') }}
+      would create an open DNS resolver or is too broad.
+  when: dns_lan_enabled | default(false) | bool
+
+- name: Configure | Set number of threads
+  ansible.builtin.set_fact:
+    __dns_threads: >-
+      {{ dns_num_threads if (dns_num_threads | int) > 0
+         else ansible_facts['processor_vcpus'] | default(1) }}
+
+- name: Configure | Deploy main configuration
+  ansible.builtin.template:
+    src: unbound.conf.j2
+    dest: '/etc/unbound/unbound.conf'
+    owner: root
+    group: '{{ __dns_group }}'
+    mode: '0640'
+    validate: 'unbound-checkconf %s'
+  notify: Restart unbound
+
+# Setup unbound-control keys (required by dnsconfd to manage Unbound)
+- name: Configure | Setup unbound-control keys
+  ansible.builtin.command:
+    cmd: unbound-control-setup
+    creates: /etc/unbound/unbound_control.key
+
+- name: Configure | Remove package-provided conf.d files
+  ansible.builtin.file:
+    path: '/etc/unbound/conf.d/{{ item }}'
+    state: absent
+  loop:
+    - example.com.conf
+    - remote-control.conf
+    - unbound-local-root.conf
+  notify: Restart unbound
+
+- name: Configure | Deploy local zones
+  ansible.builtin.template:
+    src: local-zones.conf.j2
+    dest: '/etc/unbound/conf.d/10-local-zones.conf'
+    owner: root
+    group: '{{ __dns_group }}'
+    mode: '0640'
+  notify: Reload unbound
+  when: dns_local_zones | length > 0 or dns_local_data | length > 0 or dns_local_data_ptr | length > 0
+
+- name: Configure | Remove local zones config when not needed
+  ansible.builtin.file:
+    path: '/etc/unbound/conf.d/10-local-zones.conf'
+    state: absent
+  notify: Reload unbound
+  when:
+    - dns_local_zones | length == 0
+    - dns_local_data | length == 0
+    - dns_local_data_ptr | length == 0
+
+- name: Configure | Initialize DNSSEC root key
+  ansible.builtin.command:
+    cmd: 'unbound-anchor -a {{ __dns_root_key }}'
+    creates: '{{ __dns_root_key }}'
+  register: __dns_anchor
+  failed_when:
+    - __dns_anchor.rc != 0
+    - __dns_anchor.rc != 1
+  changed_when: __dns_anchor.rc == 1
+  when: dns_dnssec_enabled | bool
+
+# ---------------------------------------------------------------------------
+# dnsconfd -- manages resolv.conf, DoT upstreams, and resolved D-Bus API
+# ---------------------------------------------------------------------------
+- name: Configure | Ensure dnsconfd config directory exists
+  ansible.builtin.file:
+    path: /etc/dnsconfd
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+# Override dnsconfd's default module-config:
+#   ipsecmod removed -- requires libreswan which we don't install; SELinux
+#     unbound_t can't execute the ipsec hook (ipsec_exec_t).
+#   respip added -- required for RPZ (Response Policy Zones) to apply
+#     response-policy actions before answers leave the resolver.
+#   validator -- DNSSEC validation.
+#   iterator -- standard recursive resolution.
+- name: Configure | Override dnsconfd module-config for DNSSEC and RPZ
+  ansible.builtin.copy:
+    dest: /etc/unbound/conf.d/zz-module-override.conf
+    content: |
+      server:
+          module-config: "respip validator iterator"
+    owner: root
+    group: '{{ __dns_group }}'
+    mode: '0640'
+  notify: Restart unbound
+
+- name: Configure | Deploy RPZ zone configuration
+  ansible.builtin.template:
+    src: zz-rpz-oisd.conf.j2
+    dest: '/etc/unbound/conf.d/zz-rpz-oisd.conf'
+    owner: root
+    group: '{{ __dns_group }}'
+    mode: '0640'
+  notify: Restart unbound
+  when: dns_rpz_enabled | default(false) | bool
+
+- name: Configure | Deploy dnsconfd configuration
+  ansible.builtin.template:
+    src: dnsconfd.conf.j2
+    dest: /etc/dnsconfd/dnsconfd.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart dnsconfd
+
+- name: Configure | Set NetworkManager DNS backend to dnsconfd
+  ansible.builtin.copy:
+    dest: /etc/NetworkManager/conf.d/dns.conf
+    content: |
+      # Managed by ansible-workstation-firstboot (dns role)
+      # dnsconfd manages Unbound and resolv.conf
+      [main]
+      dns=dnsconfd
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload NetworkManager
+
+# Remove nss-resolve from nsswitch to eliminate D-Bus calls to
+# org.freedesktop.resolve1. dnsconfd implements the resolved D-Bus API
+# for backward compatibility but nss-resolve is unnecessary with Unbound.
+- name: Configure | Remove nss-resolve from nsswitch.conf
+  ansible.builtin.lineinfile:
+    path: /etc/nsswitch.conf
+    regexp: '^hosts:'
+    line: 'hosts:      files mdns_minimal [NOTFOUND=return] myhostname dns'
+    backup: true
+
+# Remove stale resolv.conf symlink from previous deployment if present.
+# dnsconfd manages /etc/resolv.conf directly.
+- name: Configure | Remove stale resolv.conf.unbound
+  ansible.builtin.file:
+    path: /etc/unbound/resolv.conf.unbound
+    state: absent
+
+# Remove stale D-Bus mask from previous deployment if present.
+# dnsconfd implements the org.freedesktop.resolve1 D-Bus API natively.
+- name: Configure | Remove stale resolved D-Bus mask
+  ansible.builtin.file:
+    path: /etc/dbus-1/system-services/org.freedesktop.resolve1.service
+    state: absent
+
+# Remove stale forward-zones.conf from previous deployment if present.
+# Upstream DoT servers are now managed by dnsconfd static_servers.
+- name: Configure | Remove stale forward zones config
+  ansible.builtin.file:
+    path: /etc/unbound/conf.d/90-forward-zones.conf
+    state: absent
+  notify: Reload unbound
+
+# ---------------------------------------------------------------------------
+# Browser DoH lockdown: prevent Chrome/Firefox from bypassing local DNS
+# ---------------------------------------------------------------------------
+- name: Configure | Create Chrome managed policies directory
+  ansible.builtin.file:
+    path: /etc/opt/chrome/policies/managed
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Configure | Deploy Chrome DoH disable policy
+  ansible.builtin.copy:
+    dest: /etc/opt/chrome/policies/managed/dns-security.json
+    content: |
+      {
+        "DnsOverHttpsMode": "off"
+      }
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Configure | Deploy Chrome uBlock Origin force-install policy
+  ansible.builtin.copy:
+    dest: /etc/opt/chrome/policies/managed/extensions.json
+    content: |
+      {
+        "ExtensionInstallForcelist": [
+          "cjpalhdlnbpafiamejdnhcphjbkeiagm;https://clients2.google.com/service/update2/crx"
+        ]
+      }
+    owner: root
+    group: root
+    mode: '0644'

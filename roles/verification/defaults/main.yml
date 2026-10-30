@@ -1,0 +1,11 @@
+---
+verification_vault_addr: "https://127.0.0.1:8200"
+
+verification_masked_units:
+  - bluetooth.service
+  - bluetooth.target
+  - cups.service
+  - cups.socket
+  - cups.path
+
+verification_disabled_units: []

@@ -1,0 +1,17 @@
+policy_module(sshd-vault-ssh-helper, 1.0.0)
+
+# Option A (client-approved for now; Option B dedicated domain
+# transition is the long-term plan, see docs/KNOWN_ISSUES.md backlog).
+# vault-ssh-helper runs as sshd_t (invoked via pam_exec during sshd's
+# auth phase, before pam_selinux.so open transitions to the user
+# context). It needs to reach Vault's API on port 8200 to validate
+# OTPs. Extend the existing vault_cluster_port_t label (currently only
+# covers 8201) to also cover 8200 -- see roles/vault/handlers/main.yml.
+
+require {
+    type sshd_t;
+    type vault_cluster_port_t;
+    class tcp_socket name_connect;
+}
+
+allow sshd_t vault_cluster_port_t:tcp_socket name_connect;

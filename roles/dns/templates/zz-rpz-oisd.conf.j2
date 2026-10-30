@@ -1,0 +1,14 @@
+{{ ansible_managed | default('Ansible managed') | comment }}
+# RPZ via oisd Small -- configured directly in Unbound conf.d because
+# dnsconfd's rpz: schema has no url: key (see ADR-0004).
+# zonefile: ensures boot resilience -- Unbound reads cached copy if
+# oisd is unreachable at startup.
+{% if dns_rpz_enabled | default(false) | bool %}
+rpz:
+    name: "oisdsmall"
+    url: "https://small.oisd.nl/rpz"
+    zonefile: "/var/lib/unbound/oisdsmall.rpz.zone"
+    rpz-action-override: nxdomain
+    rpz-log: yes
+    rpz-log-name: "oisd"
+{% endif %}

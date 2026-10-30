@@ -1,0 +1,21 @@
+---
+roles:
+  - name: linux-system-roles.firewall
+  - name: linux-system-roles.selinux
+  - name: linux-system-roles.fapolicyd
+  - name: linux-system-roles.aide
+  - name: linux-system-roles.sudo
+  - name: linux-system-roles.systemd
+  - name: linux-system-roles.crypto_policies
+  - name: linux-system-roles.certificate
+  - name: linux-system-roles.timesync
+  - name: linux-system-roles.bootloader
+  - name: linux-system-roles.kernel_settings
+  - name: linux-system-roles.tuned
+  - name: linux-system-roles.journald
+  - name: linux-system-roles.tlog
+  - name: linux-system-roles.ssh
+  - name: willshersystems.sshd
+  # Day-2 optional:
+  # - name: linux-system-roles.vpn
+  # - name: linux-system-roles.network

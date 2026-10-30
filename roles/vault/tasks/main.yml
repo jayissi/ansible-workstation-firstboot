@@ -1,0 +1,59 @@
+---
+# roles/vault/tasks/main.yml
+# Vault CE full lifecycle with state-aware idempotency guards
+
+- name: Check if Vault PKI cert exists (skip bootstrap if so)
+  ansible.builtin.stat:
+    path: "{{ vault_cert_dir }}/root.crt"
+  register: vault_pki_initialized
+
+- name: Include Vault installation
+  ansible.builtin.include_tasks: install.yml
+
+- name: Include TLS bootstrap (only on first run)
+  ansible.builtin.include_tasks: tls_bootstrap.yml
+  when: not vault_pki_initialized.stat.exists
+
+- name: Include Vault configuration
+  ansible.builtin.include_tasks: configure.yml
+
+- name: Include Vault initialization
+  ansible.builtin.include_tasks: init.yml
+
+# Token-dependent tasks: skip if token unavailable (already configured)
+- name: Include PKI engine setup
+  ansible.builtin.include_tasks: pki_engine.yml
+  when: vault_root_token | default('') | length > 0
+
+- name: Include SSH secrets engine setup
+  ansible.builtin.include_tasks: ssh_engine.yml
+  when: vault_root_token | default('') | length > 0
+
+- name: Include Vault Agent configuration
+  ansible.builtin.include_tasks: agent.yml
+
+- name: Include production TLS and finalization
+  ansible.builtin.include_tasks: tls_production.yml
+  when: vault_root_token | default('') | length > 0
+
+- name: Backup secrets to Vault KV
+  ansible.builtin.include_tasks: backup_secrets.yml
+  when: vault_root_token | default('') | length > 0
+
+- name: Include root token rotation (on-demand only)
+  ansible.builtin.include_tasks:
+    file: rotate_token.yml
+    apply:
+      tags:
+        - vault-rotate-token
+  when: vault_rotate_root_token | default(false) | bool
+  tags:
+    - vault-rotate-token
+    - never
+
+- name: Report Vault status
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'Vault fully configured with ' ~ vault_pki_key_type | upper ~ ' PKI.'
+         if vault_root_token | default('') | length > 0
+         else 'Vault running (PKI already configured from previous run).' }}

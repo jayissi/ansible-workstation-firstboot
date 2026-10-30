@@ -1,0 +1,14 @@
+# Controller host prerequisites
+# Install via: sudo dnf install -y $(grep -v '^#' requirements-rpm.txt)
+#
+# Lint tools (ShellCheck, gitleaks, hadolint, selint, shfmt) are NOT listed
+# here -- they are installed inside Containerfile.lint only. Linting runs
+# entirely inside Podman via "make lint", keeping the host clean.
+python3
+python3-pip
+python3-devel
+ansible-core
+make
+podman
+git
+sshpass

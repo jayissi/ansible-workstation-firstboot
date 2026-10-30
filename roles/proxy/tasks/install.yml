@@ -1,0 +1,23 @@
+---
+- name: Install | Nginx package
+  ansible.builtin.dnf:
+    name: '{{ __proxy_packages }}'
+    state: present
+
+- name: Install | Deploy cert reload path unit
+  ansible.builtin.template:
+    src: nginx-cert-reload.path.j2
+    dest: /etc/systemd/system/nginx-cert-reload.path
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload proxy systemd units
+
+- name: Install | Deploy cert reload service
+  ansible.builtin.template:
+    src: nginx-cert-reload.service.j2
+    dest: /etc/systemd/system/nginx-cert-reload.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload proxy systemd units

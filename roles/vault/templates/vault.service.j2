@@ -1,0 +1,37 @@
+# {{ ansible_managed }}
+[Unit]
+Description=HashiCorp Vault - A Secret Management Tool
+Documentation=https://developer.hashicorp.com/vault/docs
+Requires=network-online.target
+After=network-online.target
+ConditionFileNotEmpty={{ vault_config_dir }}/vault.hcl
+
+[Service]
+Type=exec
+TimeoutStartSec=120
+User={{ vault_user }}
+Group={{ vault_group }}
+ExecStart=/usr/bin/vault server -config={{ vault_config_dir }}/vault.hcl
+ExecReload=/bin/kill --signal HUP $MAINPID
+KillMode=process
+KillSignal=SIGINT
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+LimitCORE=0
+
+ProtectSystem=full
+PrivateTmp=yes
+PrivateDevices=yes
+SecureBits=keep-caps
+AmbientCapabilities=CAP_IPC_LOCK
+CapabilityBoundingSet=CAP_SYSLOG CAP_IPC_LOCK
+NoNewPrivileges=yes
+
+Environment=VAULT_ADDR={{ vault_addr }}
+Environment=VAULT_CACERT={{ vault_tls_cert_file }}
+
+[Install]
+WantedBy=multi-user.target

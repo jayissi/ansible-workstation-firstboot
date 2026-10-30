@@ -1,0 +1,273 @@
+---
+# roles/vault/tasks/tls_production.yml
+# Replace bootstrap cert with Vault PKI-issued cert, finalize security
+
+# ------------------------------------------------------------------
+# Deploy unseal script BEFORE cert swap (fixes restart race condition)
+# ------------------------------------------------------------------
+- name: Tls Production | Deploy auto-unseal script before cert rotation
+  ansible.builtin.template:
+    src: vault-auto-unseal.sh.j2
+    dest: /usr/local/bin/vault-auto-unseal
+    owner: root
+    group: root
+    mode: "0750"
+
+# ------------------------------------------------------------------
+# Remove immutable attr before cert rotation
+# ------------------------------------------------------------------
+# Immutable attribute (chattr +i) removed from TLS key management.
+# It actively conflicts with Vault Agent's cert rotation (Agent runs
+# as vault user without CAP_LINUX_IMMUTABLE). The key is already
+# protected by 0400 vault:vault permissions + SELinux vault_conf_t
+# enforcement (only vault_t domain can write to the file).
+
+# ------------------------------------------------------------------
+# Request and deploy production TLS certificate (idempotent: skip if
+# a still-valid cert is already deployed. Vault Agent autonomously
+# rotates the leaf cert ahead of expiry via its own template/lease
+# watcher -- Ansible only needs to issue one when none exists yet or
+# the existing one has already expired, e.g. on the very first run or
+# after a long-stopped Agent. Without this guard, every single deploy
+# run issued a brand-new cert and restarted vault.service.)
+# ------------------------------------------------------------------
+- name: Tls Production | Check existing production certificate validity
+  ansible.builtin.command:
+    cmd: "openssl x509 -checkend 0 -noout -in {{ vault_tls_cert_file }}"
+  register: vault_existing_cert_check
+  changed_when: false
+  failed_when: false
+
+# Distinguishes a PRODUCTION PKI-issued cert from the BOOTSTRAP
+# self-signed cert: root.crt only exists after the first successful
+# production cert deployment. Without this, the idempotency guard
+# above sees the bootstrap cert as "valid" and skips issuance entirely
+# on the first run, leaving the system with the wrong cert.
+- name: Tls Production | Check if Root CA exists (production vs bootstrap cert)
+  ansible.builtin.stat:
+    path: "{{ vault_cert_dir }}/root.crt"
+  register: vault_root_ca_exists
+
+- name: Tls Production | Request leaf certificate from Vault PKI
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/pki_int/issue/workstation-leaf"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      common_name: "{{ ansible_facts.fqdn }}"
+      alt_names: "localhost,{{ vault_local_hostname }},{{ ansible_hostname }}"
+      ip_sans: "127.0.0.1"
+      ttl: "{{ vault_pki_leaf_ttl }}"
+    validate_certs: false
+    status_code:
+      - 200
+  register: vault_leaf_cert
+  when: vault_existing_cert_check.rc != 0 or not vault_root_ca_exists.stat.exists
+
+- name: Tls Production | Deploy production TLS private key
+  ansible.builtin.copy:
+    content: "{{ vault_leaf_cert.json.data.private_key }}\n"
+    dest: "{{ vault_tls_key_file }}"
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: "0400"
+  no_log: true
+  when: vault_existing_cert_check.rc != 0 or not vault_root_ca_exists.stat.exists
+
+- name: Tls Production | Deploy production TLS certificate chain
+  ansible.builtin.copy:
+    content: |
+      {{ vault_leaf_cert.json.data.certificate }}
+      {{ vault_leaf_cert.json.data.issuing_ca }}
+    dest: "{{ vault_tls_cert_file }}"
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: "0444"
+  when: vault_existing_cert_check.rc != 0 or not vault_root_ca_exists.stat.exists
+
+# Fetch Root CA and Intermediate CA certs directly from the PKI mounts
+# rather than extracting from ca_chain (which can be empty on some Vault
+# versions). These mounts always serve their CA certs at /ca/pem.
+- name: Tls Production | Fetch Root CA certificate from PKI mount
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/pki/ca/pem"
+    return_content: true
+    validate_certs: false
+    status_code:
+      - 200
+  register: vault_root_ca_pem
+  when: vault_existing_cert_check.rc != 0 or not vault_root_ca_exists.stat.exists
+
+- name: Tls Production | Deploy Root CA certificate
+  ansible.builtin.copy:
+    content: "{{ vault_root_ca_pem.content }}\n"
+    dest: "{{ vault_cert_dir }}/root.crt"
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: "0444"
+  when: vault_root_ca_pem.content is defined
+
+- name: Tls Production | Fetch Intermediate CA certificate from PKI mount
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/pki_int/ca/pem"
+    return_content: true
+    validate_certs: false
+    status_code:
+      - 200
+  register: vault_int_ca_pem
+  when: vault_existing_cert_check.rc != 0 or not vault_root_ca_exists.stat.exists
+
+- name: Tls Production | Deploy Intermediate CA certificate
+  ansible.builtin.copy:
+    content: "{{ vault_int_ca_pem.content }}\n"
+    dest: "{{ vault_cert_dir }}/intermediate.crt"
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: "0444"
+  when: vault_int_ca_pem.content is defined
+
+# ------------------------------------------------------------------
+# Browser trust (system + Chrome NSS + Firefox policy). Operates on the
+# persisted root.crt file. Guarded by stat to avoid failing on first run
+# if the Root CA fetch above failed or was skipped. On reruns, root.crt
+# persists on disk so trust is re-verified even when cert issuance is
+# skipped.
+# ------------------------------------------------------------------
+- name: Tls Production | Recheck Root CA existence after potential deployment
+  ansible.builtin.stat:
+    path: "{{ vault_cert_dir }}/root.crt"
+  register: vault_root_ca_for_trust
+
+- name: Tls Production | Configure browser trust stores
+  ansible.builtin.include_tasks: browser_trust.yml
+  when: vault_root_ca_for_trust.stat.exists
+
+# ------------------------------------------------------------------
+# Restart Vault with new cert, unseal via service. Only needed when a
+# new leaf cert was actually deployed above -- ansible.builtin.systemd
+# state=restarted always restarts unconditionally, so without this
+# guard Vault (and the brief unseal window it causes) restarted on
+# every single deploy run, not just when the cert changed.
+# ------------------------------------------------------------------
+- name: Tls Production | Restart Vault and reverify with new certificate
+  when: vault_existing_cert_check.rc != 0 or not vault_root_ca_exists.stat.exists
+  block:
+    - name: Tls Production | Restart Vault to use production certificate
+      ansible.builtin.systemd:
+        name: vault
+        state: restarted
+        daemon_reload: true
+
+    - name: Tls Production | Wait for Vault process after restart
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/sys/health"
+        validate_certs: false
+        status_code:
+          - 200
+          - 429
+          - 472
+          - 473
+          - 501
+          - 503
+      register: vault_prod_health
+      until: vault_prod_health.status | default(-1) in [200, 429, 472, 473, 501, 503]
+      retries: 30
+      delay: 2
+
+    - name: Tls Production | Trigger vault-unseal service after restart
+      ansible.builtin.systemd:
+        name: vault-unseal
+        state: restarted
+      when: vault_prod_health.json.sealed | default(true)
+
+    - name: Tls Production | Verify Vault is unsealed with production cert
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/sys/health"
+        validate_certs: false
+        status_code:
+          - 200
+      register: vault_final_health
+      until: vault_final_health.status == 200
+      retries: 15
+      delay: 3
+
+# ------------------------------------------------------------------
+# Deploy environment profile (final correct CACERT)
+# ------------------------------------------------------------------
+- name: Tls Production | Deploy VAULT_ADDR and VAULT_CACERT profile
+  ansible.builtin.copy:
+    dest: /etc/profile.d/vault.sh
+    content: |
+      export VAULT_ADDR="{{ vault_addr }}"
+      export VAULT_CACERT="{{ vault_cert_dir }}/root.crt"
+    owner: root
+    group: root
+    mode: "0644"
+
+# TLS key protection: file permissions (0400 vault:vault) + SELinux
+# vault_conf_t type enforcement. No chattr +i since Vault Agent
+# (running as vault user) needs to rotate the key without root caps.
+
+# ------------------------------------------------------------------
+# SELinux policy
+# ------------------------------------------------------------------
+- name: Tls Production | Install SELinux policy development tools
+  ansible.builtin.dnf:
+    name:
+      - selinux-policy-devel
+      - make
+    state: present
+
+# If the policy source was deployed on a prior run but compilation failed
+# (e.g. deploy interrupted), the copy task below reports "ok" (unchanged)
+# and the handler never fires. This check detects that gap and forces
+# the handler to run.
+- name: Tls Production | Check if Vault SELinux policy module is loaded
+  ansible.builtin.command:
+    cmd: semodule -l
+  register: __vault_selinux_loaded
+  # "semodule -l" prints bare module names, one per line, with no
+  # trailing space (e.g. "vault\n") -- checking for the substring
+  # "vault " (with a trailing space) never matches, so changed_when
+  # was always true. Also must not match "sshd-vault-ssh-helper",
+  # which legitimately contains "vault" as a substring. Confirmed via
+  # runtime testing (cat -A on the real output).
+  changed_when: "'vault' not in __vault_selinux_loaded.stdout_lines"
+  failed_when: false
+  notify: Compile and install Vault SELinux policy
+
+# Compile/install (handler) only fires when the source actually changed,
+# via the copy task's own change detection below -- semodule -i always
+# exits 0 whether or not anything changed, so a changed_when: rc==0 task
+# would restart Vault on every single run, racing Phase 2's immediate
+# GRUB-hash fetch against Vault still being down.
+- name: Tls Production | Deploy Vault SELinux policy source
+  ansible.builtin.copy:
+    src: "selinux/{{ item }}"
+    dest: "{{ vault_selinux_dir }}/{{ item }}"
+    mode: "0644"
+  loop:
+    - vault.te
+    - vault.fc
+    - vault.if
+  notify: Compile and install Vault SELinux policy
+
+# Port labeling (semanage port -a vault_cluster_port_t 8201) is now inside
+# the "Compile and install Vault SELinux policy" handler -- it must run
+# AFTER semodule installs the policy that defines vault_cluster_port_t.
+# On a fresh VM, the type doesn't exist until the handler fires.
+
+- name: Tls Production | Restore SELinux contexts for Vault paths
+  ansible.builtin.command:
+    cmd: "restorecon -Rv {{ item }}"
+  loop:
+    - /usr/bin/vault
+    - "{{ vault_config_dir }}"
+    - "{{ vault_data_dir }}"
+    - "{{ vault_log_dir }}"
+    - "{{ vault_run_dir }}"
+    - "{{ vault_agent_run_dir }}"
+  changed_when: false
+  failed_when: false

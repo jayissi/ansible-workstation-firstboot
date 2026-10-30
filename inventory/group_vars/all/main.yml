@@ -1,0 +1,902 @@
+---
+# =============================================================================
+# Ansible Workstation Firstboot -- Single Source of Truth
+# =============================================================================
+# All role variables defined here. Edit to customize without modifying roles.
+# Sensitive values go in vault.yml (Ansible Vault encrypted).
+
+# ---------------------------------------------------------------------------
+# Common role (roles/common)
+# ---------------------------------------------------------------------------
+common_admin_user: jayissi
+common_admin_home: "/home/{{ common_admin_user }}"
+
+common_packages:
+  - age
+  - ansible-core
+  - checkmake
+  - code
+  - fapolicyd
+  - fwupd
+  - google-chrome-stable
+  - helm
+  - jdupes
+  - k9s
+  - make
+  - python3-pylint
+  - ShellCheck
+  - nss-tools
+  - usbguard
+  - vim
+  - vim-ansible
+  - vim-syntastic-ansible
+  - vim-syntastic-asciidoc
+  - vim-syntastic-json
+  - vim-syntastic-python
+  - vim-syntastic-sh
+  - vim-syntastic-yaml
+
+common_rpm_gpg_keys:
+  - https://dl.google.com/linux/linux_signing_key.pub
+  - https://packages.microsoft.com/keys/microsoft-rolling.asc
+  - https://packages.microsoft.com/yumrepos/vscode/repodata/repomd.xml.key
+
+common_third_party_repos:
+  - name: code
+    description: Visual Studio Code
+    baseurl: https://packages.microsoft.com/yumrepos/vscode
+    # A YAML list (not a comma-joined string) here, because
+    # ansible.builtin.yum_repository's gpgkey param is natively list-typed.
+    # Confirmed via runtime testing: a comma-separated string round-trips
+    # through the module as a multi-line "gpgkey = url1\n\t url2" value in
+    # the written .repo file, which never compares equal back against the
+    # original string on the next run -- always reporting "changed".
+    gpgkey:
+      - https://packages.microsoft.com/keys/microsoft-rolling.asc
+      - https://packages.microsoft.com/yumrepos/vscode/repodata/repomd.xml.key
+    gpgcheck: true
+    repo_gpgcheck: true
+    metadata_expire: "6h"
+  - name: google-chrome
+    description: google-chrome
+    baseurl: https://dl.google.com/linux/chrome/rpm/stable/x86_64
+    gpgkey: https://dl.google.com/linux/linux_signing_key.pub
+    gpgcheck: true
+    repo_gpgcheck: true
+    metadata_expire: "6h"
+
+common_bin_utilities:
+  - ad
+  - dgpg
+  - ds
+  - egpg
+  - luksenc
+  - rht
+  - vault-admin
+  - vault-unseal-age
+  - vault-unseal-gpg
+
+common_bashrc_files:
+  - env
+  - start_chrome.sh
+
+common_umask_value: "0027"
+common_luks_root_device: ""
+
+common_sshd_banner: |
+  ******************************************************************
+  * WARNING: This system is for authorized users only.             *
+  * All activity is monitored and recorded.                        *
+  * Unauthorized access is prohibited and will be prosecuted.      *
+  ******************************************************************
+
+# ---------------------------------------------------------------------------
+# DNS resolver (roles/dns -- Unbound + dnsconfd, DNSSEC + DoT)
+# ---------------------------------------------------------------------------
+# DoT upstream servers are configured in dnsconfd.conf (static_servers).
+# dnsconfd manages resolv.conf and Unbound forward zones automatically.
+
+dns_local_data:
+  - name: 'vault.local'
+    type: 'A'
+    value: '127.0.0.1'
+
+dns_local_data_ptr:
+  - ip: '127.0.0.1'
+    name: 'vault.local'
+
+dns_private_domains:
+  - 'local'
+
+dns_blocklist_enabled: true
+dns_additional_blocklist_urls:
+  - 'https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/hosts/pro.txt'
+  # - 'https://phishing.army/download/phishing_army_blocklist.txt'
+  # - 'https://small.oisd.nl/domainswild'
+
+# ---------------------------------------------------------------------------
+# HashiCorp Vault CE (roles/vault)
+# ---------------------------------------------------------------------------
+vault_version: latest
+vault_addr: "https://127.0.0.1:8200"
+vault_api_addr: "https://127.0.0.1:8200"
+vault_cluster_addr: "https://127.0.0.1:8201"
+vault_raft_node_id: "node1"
+vault_ui: true
+vault_disable_mlock: false
+vault_log_level: info
+
+vault_user: vault
+vault_group: vault
+
+vault_config_dir: /etc/vault.d
+vault_data_dir: /opt/vault/data
+vault_log_dir: /var/log/vault
+vault_cert_dir: /etc/vault.d/certs
+
+vault_tls_cert_file: "{{ vault_cert_dir }}/server-chain.crt"
+vault_tls_key_file: "{{ vault_cert_dir }}/server.key"
+
+vault_key_shares: 5
+vault_key_threshold: 3
+
+# PKI key type: "ec" (ECDSA P-256, browser-compatible) or "ed25519" (future)
+vault_pki_key_type: ec
+vault_pki_key_bits: 256
+
+vault_pki_root_ttl: "87600h"
+vault_pki_intermediate_ttl: "8760h"
+vault_pki_leaf_ttl: "2160h"
+vault_pki_leaf_max_ttl: "2160h"
+vault_agent_renew_threshold: "0.9"
+
+vault_unseal_keys_file: /root/vault-unseal-keys.age
+vault_age_identity_file: /root/.vault-unseal-identity.txt
+vault_age_recipients_file: /root/.vault-unseal-recipients.txt
+vault_use_tpm2: true
+
+vault_grub_kv_path: "secret/data/grub"
+vault_grub_kv_key: "password_hash"
+
+# ---------------------------------------------------------------------------
+# Reboot control
+# ---------------------------------------------------------------------------
+# Set to true to allow the playbook to reboot at end if needed
+reboot_ok: false
+
+# ---------------------------------------------------------------------------
+# linux_system_roles.crypto_policies (Tier 0)
+# ---------------------------------------------------------------------------
+# DEFAULT is safe for all applications. Change to FUTURE for maximum security
+# when you have verified all client applications support it.
+crypto_policies_policy: DEFAULT
+crypto_policies_reboot_ok: false
+
+# ---------------------------------------------------------------------------
+# linux_system_roles.timesync (Tier 0)
+# ---------------------------------------------------------------------------
+timesync_ntp_provider: chrony
+timesync_ntp_servers:
+  - hostname: time.cloudflare.com
+    iburst: true
+    nts: true
+  - hostname: time.google.com
+    iburst: true
+
+# ---------------------------------------------------------------------------
+# linux_system_roles.tuned (Tier 0 -- sets base profile before kernel_settings)
+# ---------------------------------------------------------------------------
+# Profile is set conditionally in site.yml:
+#   physical -> "balanced"
+#   VM guest -> "virtual-guest" (avoids SATA ALPM / cpufreq verification errors)
+tuned_daemon: true
+tuned_reapply_sysctl: true
+
+# ---------------------------------------------------------------------------
+# linux_system_roles.kernel_settings (Tier 0)
+# ---------------------------------------------------------------------------
+kernel_settings_sysctl:
+  - name: vm.swappiness
+    value: 1
+  - name: kernel.dmesg_restrict
+    value: 1
+  - name: kernel.kptr_restrict
+    value: 2
+  - name: kernel.yama.ptrace_scope
+    value: 2
+  - name: net.ipv4.conf.all.rp_filter
+    value: 1
+  - name: net.ipv4.conf.all.send_redirects
+    value: 0
+  - name: net.ipv4.conf.all.accept_redirects
+    value: 0
+  - name: net.ipv4.conf.all.log_martians
+    value: 1
+  - name: fs.protected_hardlinks
+    value: 1
+  - name: fs.protected_symlinks
+    value: 1
+  - name: fs.suid_dumpable
+    value: 0
+# THP: set to "never" on physical hosts only (conditionally in site.yml pre_tasks)
+kernel_settings_reboot_ok: false
+
+# ---------------------------------------------------------------------------
+# linux_system_roles.journald (Tier 0)
+# ---------------------------------------------------------------------------
+journald_persistent: true
+journald_max_disk_size: 2048
+journald_compression: true
+journald_sync_interval: 5
+journald_forward_to_syslog: false
+
+# ---------------------------------------------------------------------------
+# linux_system_roles.bootloader (Tier 0)
+# ---------------------------------------------------------------------------
+bootloader_timeout: 5
+bootloader_settings:
+  - kernel: ALL
+    options:
+      - name: audit
+        value: "1"
+      - name: audit_backlog_limit
+        value: "8192"
+      - name: rhgb
+        state: absent
+      # On modern Fedora, removing "rhgb" alone does NOT disable Plymouth's
+      # graphical splash/LUKS password dialog -- "quiet" + the plymouth
+      # package + enabled plymouth units are enough on their own. Confirmed
+      # via runtime testing: this VM's console froze for ~78s after a
+      # correct LUKS passphrase was entered (plymouth-read-write.service
+      # blocked until a keypress nudged plymouthd into sending its
+      # SIGRTMIN+20 "ready" signal to PID 1). This is a known, widely
+      # reported Plymouth/graphics-handoff bug class after LUKS unlock
+      # (not specific to this VM/this project's config); plymouth.enable=0
+      # is the documented, confirmed-working upstream workaround -- it
+      # skips Plymouth entirely and falls back to the plain-text
+      # systemd-ask-password console prompt, matching the intent already
+      # expressed by removing rhgb above.
+      - name: plymouth.enable
+        value: "0"
+      # With Plymouth disabled (above) but "quiet" still present, there is
+      # nothing left to render boot progress at all -- confirmed via a
+      # screen recording: with plymouth.enable=0 alone, the console goes
+      # fully black except for the one required interactive LUKS
+      # passphrase line (which bypasses "quiet" since it's a blocking
+      # prompt, not an informational log message); the previously-visible
+      # scrolling service-startup text is gone, because that text was
+      # Plymouth's own text/"details" fallback rendering, not the kernel's.
+      # Removing "quiet" restores normal verbose kernel/systemd boot
+      # output now that nothing else is going to show it.
+      - name: quiet
+        state: absent
+bootloader_reboot_ok: false
+
+# ---------------------------------------------------------------------------
+# linux_system_roles.certificate (Tier 0)
+# ---------------------------------------------------------------------------
+certificate_requests: []
+
+# ---------------------------------------------------------------------------
+# linux_system_roles.systemd (Tier 0)
+# ---------------------------------------------------------------------------
+systemd_masked_units:
+  - bluetooth.service
+  - bluetooth.target
+  - cups.service
+  - cups.socket
+  - cups.path
+  - mcelog.service
+  - systemd-resolved.service
+  - systemd-resolved-monitor.socket
+  - systemd-resolved-varlink.socket
+
+# Avahi is managed by roles/avahi with a hardened config (user-service
+# publishing disabled, no HINFO/workstation leak, rlimit-core=0).
+# It is enabled and running -- no systemd unmask/disable needed.
+
+# ---------------------------------------------------------------------------
+# willshersystems.sshd (Tier 1)
+# ---------------------------------------------------------------------------
+sshd:
+  PermitRootLogin: "no"
+  PasswordAuthentication: "no"
+  KbdInteractiveAuthentication: "yes"
+  PubkeyAuthentication: "yes"
+  AuthenticationMethods: "publickey keyboard-interactive"
+  X11Forwarding: "no"
+  AllowTcpForwarding: "no"
+  MaxAuthTries: 3
+  MaxSessions: 2
+  ClientAliveInterval: 300
+  ClientAliveCountMax: 2
+  LoginGraceTime: 30
+  AllowUsers: "{{ ssh_allowed_users | join(' ') }}"
+  Banner: /etc/ssh/banner
+  HostKey:
+    - /etc/ssh/ssh_host_ed25519_key
+  TrustedUserCAKeys: /etc/ssh/trusted-user-ca-keys.pem
+
+# ---------------------------------------------------------------------------
+# Auth / PAM hardening (roles/auth)
+# ---------------------------------------------------------------------------
+auth_vault_ssh_helper_enabled: true
+auth_faillock_deny: 3
+auth_pwquality_minlen: 14
+auth_pwhistory_remember: 24
+
+# ---------------------------------------------------------------------------
+# linux_system_roles.auditd (Tier 1)
+# ---------------------------------------------------------------------------
+auditd_config:
+  log_format: ENRICHED
+  max_log_file: 50
+  num_logs: 10
+  max_log_file_action: ROTATE
+  space_left_action: SYSLOG
+  admin_space_left_action: SUSPEND
+
+auditd_buffer_size: 32768
+# auditd_enable_flag: 2 would make rules immutable (CIS 4.1.17) but the
+# fedora.linux_system_roles.auditd template places -e before rules, so
+# -e 2 locks the config before any rules load. Keep at 1 until the
+# upstream template moves -e to the end of the rules file.
+auditd_enable_flag: 1
+
+auditd_rules:
+  # -----------------------------------------------------------------
+  # Identity files -- CIS 4.1.5
+  # -----------------------------------------------------------------
+  - action: always
+    filter: exit
+    path: /etc/passwd
+    permission:
+      - write
+      - attribute_change
+    keyname: identity
+  - action: always
+    filter: exit
+    path: /etc/shadow
+    permission:
+      - write
+      - attribute_change
+    keyname: identity
+  - action: always
+    filter: exit
+    path: /etc/group
+    permission:
+      - write
+      - attribute_change
+    keyname: identity
+  - action: always
+    filter: exit
+    path: /etc/gshadow
+    permission:
+      - write
+      - attribute_change
+    keyname: identity
+  - action: always
+    filter: exit
+    path: /etc/security/opasswd
+    permission:
+      - write
+      - attribute_change
+    keyname: identity
+
+  # -----------------------------------------------------------------
+  # Time changes -- CIS 4.1.4, NIST AU-2
+  # -----------------------------------------------------------------
+  - action: always
+    filter: exit
+    arch:
+      - b64
+      - b32
+    syscall:
+      - adjtimex
+      - settimeofday
+    keyname: time-change
+  - action: always
+    filter: exit
+    arch:
+      - b64
+      - b32
+    syscall:
+      - clock_settime
+    keyname: time-change
+  - action: always
+    filter: exit
+    path: /etc/localtime
+    permission:
+      - write
+      - attribute_change
+    keyname: time-change
+
+  # -----------------------------------------------------------------
+  # Network configuration -- CIS 4.1.6
+  # -----------------------------------------------------------------
+  - action: always
+    filter: exit
+    arch:
+      - b64
+      - b32
+    syscall:
+      - sethostname
+      - setdomainname
+    keyname: system-locale
+  - action: always
+    filter: exit
+    path: /etc/hosts
+    permission:
+      - write
+      - attribute_change
+    keyname: system-locale
+
+  # -----------------------------------------------------------------
+  # Login/logout -- CIS 4.1.8
+  # -----------------------------------------------------------------
+  - action: always
+    filter: exit
+    path: /var/log/lastlog
+    permission:
+      - write
+      - attribute_change
+    keyname: logins
+  - action: always
+    filter: exit
+    dir: /var/run/faillock
+    permission:
+      - write
+      - attribute_change
+    keyname: logins
+
+  # -----------------------------------------------------------------
+  # Session initiation -- CIS 4.1.9
+  # -----------------------------------------------------------------
+  - action: always
+    filter: exit
+    path: /var/run/utmp
+    permission:
+      - write
+      - attribute_change
+    keyname: session
+  - action: always
+    filter: exit
+    path: /var/log/wtmp
+    permission:
+      - write
+      - attribute_change
+    keyname: session
+  - action: always
+    filter: exit
+    path: /var/log/btmp
+    permission:
+      - write
+      - attribute_change
+    keyname: session
+
+  # -----------------------------------------------------------------
+  # Permission modifications -- CIS 4.1.10
+  # -----------------------------------------------------------------
+  - action: always
+    filter: exit
+    arch:
+      - b64
+      - b32
+    syscall:
+      - chmod
+      - fchmod
+      - fchmodat
+    field:
+      - "auid>=1000"
+      - "auid!=4294967295"
+    keyname: perm_mod
+  - action: always
+    filter: exit
+    arch:
+      - b64
+      - b32
+    syscall:
+      - chown
+      - fchown
+      - fchownat
+      - lchown
+    field:
+      - "auid>=1000"
+      - "auid!=4294967295"
+    keyname: perm_mod
+
+  # -----------------------------------------------------------------
+  # Unauthorized access attempts -- CIS 4.1.11
+  # -----------------------------------------------------------------
+  - action: always
+    filter: exit
+    arch:
+      - b64
+      - b32
+    syscall:
+      - open
+      - openat
+      - creat
+      - truncate
+      - ftruncate
+    field:
+      - "exit=-EACCES"
+      - "auid>=1000"
+      - "auid!=4294967295"
+    keyname: access
+  - action: always
+    filter: exit
+    arch:
+      - b64
+      - b32
+    syscall:
+      - open
+      - openat
+      - creat
+      - truncate
+      - ftruncate
+    field:
+      - "exit=-EPERM"
+      - "auid>=1000"
+      - "auid!=4294967295"
+    keyname: access
+
+  # -----------------------------------------------------------------
+  # Sudoers changes -- CIS 4.1.13
+  # -----------------------------------------------------------------
+  - action: always
+    filter: exit
+    path: /etc/sudoers
+    permission:
+      - write
+      - attribute_change
+    keyname: scope
+  - action: always
+    filter: exit
+    dir: /etc/sudoers.d
+    permission:
+      - write
+      - attribute_change
+    keyname: scope
+
+  # -----------------------------------------------------------------
+  # File deletions -- CIS 4.1.14
+  # -----------------------------------------------------------------
+  - action: always
+    filter: exit
+    arch:
+      - b64
+      - b32
+    syscall:
+      - unlink
+      - unlinkat
+      - rename
+      - renameat
+    field:
+      - "auid>=1000"
+      - "auid!=4294967295"
+    keyname: delete
+
+  # Privilege escalation (CIS 4.1.15) requires -C flag for cross-field
+  # comparison (euid!=uid) which fedora.linux_system_roles.auditd does not
+  # support via the field parameter. Sudo usage is audited via the scope
+  # rules above (/etc/sudoers, /etc/sudoers.d) instead.
+
+  # -----------------------------------------------------------------
+  # Kernel modules -- CIS 4.1.16
+  # -----------------------------------------------------------------
+  - action: always
+    filter: exit
+    path: /sbin/insmod
+    permission:
+      - execute
+    keyname: modules
+  - action: always
+    filter: exit
+    path: /sbin/rmmod
+    permission:
+      - execute
+    keyname: modules
+  - action: always
+    filter: exit
+    path: /sbin/modprobe
+    permission:
+      - execute
+    keyname: modules
+  - action: always
+    filter: exit
+    arch:
+      - b64
+      - b32
+    syscall:
+      - init_module
+      - finit_module
+      - delete_module
+    keyname: modules
+
+  # -----------------------------------------------------------------
+  # SELinux/MAC policy -- NIST AU-2
+  # -----------------------------------------------------------------
+  - action: always
+    filter: exit
+    dir: /etc/selinux
+    permission:
+      - write
+      - attribute_change
+    keyname: MAC-policy
+  - action: always
+    filter: exit
+    dir: /usr/share/selinux
+    permission:
+      - write
+      - attribute_change
+    keyname: MAC-policy
+
+  # -----------------------------------------------------------------
+  # Project-specific watches
+  # -----------------------------------------------------------------
+  - action: always
+    filter: exit
+    path: /etc/ssh/sshd_config
+    permission:
+      - write
+      - attribute_change
+    keyname: sshd_config
+  - action: always
+    filter: exit
+    dir: /etc/vault.d
+    permission:
+      - write
+      - attribute_change
+    keyname: vault_config
+  - action: always
+    filter: exit
+    path: /etc/vault.d/certs/server.key
+    permission:
+      - read
+      - write
+      - attribute_change
+    keyname: vault_tls_key
+  - action: always
+    filter: exit
+    dir: /etc/fapolicyd
+    permission:
+      - write
+      - attribute_change
+    keyname: fapolicyd
+  - action: always
+    filter: exit
+    dir: /etc/unbound
+    permission:
+      - write
+      - attribute_change
+    keyname: dns_config
+  - action: always
+    filter: exit
+    dir: /etc/nginx
+    permission:
+      - write
+      - attribute_change
+    keyname: proxy_config
+  - action: always
+    filter: exit
+    dir: /etc/avahi
+    permission:
+      - write
+      - attribute_change
+    keyname: avahi_config
+
+  # -----------------------------------------------------------------
+  # Auth / PAM / Vault SSH -- Part 7 audit watches
+  # -----------------------------------------------------------------
+  - action: always
+    filter: exit
+    dir: /etc/security
+    permission:
+      - write
+      - attribute_change
+    keyname: pam_config
+  - action: always
+    filter: exit
+    path: /etc/ssh/trusted-user-ca-keys.pem
+    permission:
+      - write
+      - attribute_change
+    keyname: ssh_ca_trust
+  - action: always
+    filter: exit
+    dir: /etc/vault-ssh-helper.d
+    permission:
+      - write
+      - attribute_change
+    keyname: vault_ssh_config
+
+# ---------------------------------------------------------------------------
+# linux_system_roles.tlog (Tier 1)
+# ---------------------------------------------------------------------------
+tlog_use_sssd: true
+tlog_scope_sssd: some
+tlog_users_sssd:
+  - "{{ common_admin_user }}"
+
+# ---------------------------------------------------------------------------
+# linux_system_roles.firewall (Tier 2)
+# ---------------------------------------------------------------------------
+bastion_ip: "192.168.122.1"
+
+# SSH access: add entries to allow more IPs/users without editing firewall
+# or sshd blocks directly.  Each source generates a rich rule + AllowUsers
+# entry.  Uncomment extras as needed.
+ssh_allowed_sources:
+  - ip: "{{ bastion_ip }}"
+    comment: bastion
+  # - ip: "10.0.0.5"
+  #   comment: VPN admin laptop
+
+ssh_allowed_users:
+  - "{{ common_admin_user }}"
+
+firewall:
+  - previous: replaced
+  - zone: FedoraWorkstation
+    state: present
+  - zone: FedoraWorkstation
+    target: DROP
+    state: enabled
+    permanent: true
+  - zone: FedoraWorkstation
+    service:
+      - dhcpv6-client
+      - samba-client
+    state: disabled
+    permanent: true
+  - zone: FedoraWorkstation
+    port:
+      - 1025-65535/udp
+      - 1025-65535/tcp
+    state: disabled
+    permanent: true
+  - zone: FedoraWorkstation
+    icmp_block:
+      - echo-request
+      - timestamp-request
+      - timestamp-reply
+    state: enabled
+    permanent: true
+  - zone: FedoraWorkstation
+    rich_rule: "{{ firewall_rich_rules }}"
+    state: enabled
+    permanent: true
+firewall_disable_conflicting_services: true
+
+# ---------------------------------------------------------------------------
+# linux_system_roles.selinux (Tier 2)
+# ---------------------------------------------------------------------------
+selinux_state: enforcing
+selinux_policy: targeted
+selinux_booleans:
+  - name: ssh_sysadm_login
+    state: true
+    persistent: true
+  - name: xdm_sysadm_login
+    state: true
+    persistent: true
+  - name: staff_use_svirt
+    state: true
+    persistent: true
+  - name: deny_ptrace
+    state: true
+    persistent: true
+  - name: httpd_can_network_connect
+    state: true
+    persistent: true
+selinux_logins:
+  # unconfined_u for __default__ -- required for GUI workstations (gdm-greeter, system users)
+  # user_u is too restrictive and breaks D-Bus sessions needed by GDM/GNOME
+  - login: __default__
+    seuser: unconfined_u
+    serange: "s0-s0:c0.c1023"
+    state: present
+  - login: "{{ common_admin_user }}"
+    seuser: staff_u
+    serange: "s0-s0:c0.c1023"
+    state: present
+# NOTE: /etc/vault.d is deliberately excluded here. The vault role already
+# restores its SELinux contexts in install.yml and tls_production.yml
+# *before* the TLS private key's immutable attribute (chattr +i) is set.
+# The generic linux-system-roles.selinux sweep below runs `restorecon -F`
+# unconditionally and has no failed_when guard, so it hard-fails on the
+# immutable server.key and aborts the rest of the playbook (sudo/fapolicyd
+# tiers, AIDE baseline init, verification, and the reboot phase all get
+# skipped as a result). Vault's own restorecon calls already cover this path.
+selinux_restore_dirs:
+  - "{{ common_admin_home }}"
+  - /usr/bin/vault
+  - /opt/vault
+  - /var/log/vault
+  - /etc/nginx/certs
+# Port labeling for vault_cluster_port_t (8201) is handled inside the
+# "Compile and install Vault SELinux policy" handler in roles/vault/handlers/
+# rather than via selinux_ports here, because vault_cluster_port_t is defined
+# by our custom policy module and doesn't exist until after semodule installs
+# it. The linux-system-roles.selinux role's seport module would fail on a
+# fresh VM if it tried to label a type that hasn't been loaded yet.
+selinux_fcontexts:
+  - target: '/etc/vault\.d(/.*)?'
+    setype: vault_conf_t
+    ftype: a
+    state: present
+  - target: '/opt/vault(/.*)?'
+    setype: vault_sys_content_t
+    ftype: a
+    state: present
+  - target: '/opt/vault/run(/.*)?'
+    setype: vault_sys_content_t
+    ftype: a
+    state: present
+  - target: '/opt/vault/agent-run(/.*)?'
+    setype: vault_sys_content_t
+    ftype: a
+    state: present
+  - target: '/var/log/vault(/.*)?'
+    setype: vault_log_t
+    ftype: a
+    state: present
+  - target: '/etc/nginx/certs(/.*)?'
+    setype: httpd_config_t
+    ftype: a
+    state: present
+
+# ---------------------------------------------------------------------------
+# linux_system_roles.sudo (Tier 3)
+# ---------------------------------------------------------------------------
+sudo_sudoers_files:
+  - path: /etc/sudoers.d/00-hardening
+    defaults:
+      - use_pty
+      - "logfile=/var/log/sudo.log"
+    user_specifications:
+      - users:
+          - "%wheel"
+        hosts:
+          - ALL
+        operators:
+          - ALL
+        tags:
+          - NOPASSWD
+        commands:
+          - ALL
+        # SELinux role transition handled by Phase 0 in site.yml
+        # Not forced in sudoers (breaks first run when user is still unconfined_u)
+
+# ---------------------------------------------------------------------------
+# linux_system_roles.fapolicyd (Tier 3 -- LAST hardening role)
+# ---------------------------------------------------------------------------
+fapolicyd_setup_enable_service: true
+fapolicyd_setup_integrity: sha256
+fapolicyd_setup_trust: rpmdb,file
+fapolicyd_setup_permissive: false
+fapolicyd_add_trusted_paths:
+  - /usr/local/bin/ad
+  - /usr/local/bin/dgpg
+  - /usr/local/bin/ds
+  - /usr/local/bin/egpg
+  - /usr/local/bin/luksenc
+  - /usr/local/bin/rht
+  - /usr/local/bin/vault-admin
+  - /usr/local/bin/vault-auto-unseal
+  - /usr/local/bin/vault-agent-secret-id
+  - /usr/local/bin/vault-agent-split-cert
+  - /usr/local/bin/vault-unseal-age
+  - /usr/local/bin/vault-unseal-gpg
+  - /usr/bin/vault
+  - /usr/bin/vault-ssh-helper
+  - /usr/local/bin/vault-agent-split-proxy-cert
+
+# ---------------------------------------------------------------------------
+# linux_system_roles.aide (Phase 3 -- MUST be LAST)
+# ---------------------------------------------------------------------------
+aide_init: true
+aide_cron_check: true
+aide_cron_interval: "05 4 * * *"
+aide_db_fetch_dir: files

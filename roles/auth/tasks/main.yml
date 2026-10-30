@@ -1,0 +1,15 @@
+---
+# roles/auth/tasks/main.yml
+# Orchestration: authselect + PAM hardening + vault-ssh-helper + SELinux
+
+- name: Import install tasks
+  ansible.builtin.import_tasks: install.yml
+
+- name: Import configure tasks
+  ansible.builtin.import_tasks: configure.yml
+
+- name: Import authselect tasks
+  ansible.builtin.import_tasks: authselect.yml
+
+- name: Import selinux tasks
+  ansible.builtin.import_tasks: selinux.yml

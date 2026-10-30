@@ -1,0 +1,179 @@
+---
+# roles/vault/tasks/ssh_engine.yml
+# Configure Vault SSH secrets engines (OTP + CA) with idempotent mount checks
+# Follows the same pattern as pki_engine.yml -- _vault_token is already set.
+
+# ------------------------------------------------------------------
+# Step 1: Mount SSH OTP secrets engine
+# ------------------------------------------------------------------
+- name: Ssh Engine | Enable SSH OTP secrets engine
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/mounts/ssh-otp"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      type: ssh
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+  when: "'ssh-otp/' not in vault_mounts.json"
+
+# ------------------------------------------------------------------
+# Step 2: Create OTP role for daily access
+# ------------------------------------------------------------------
+- name: Ssh Engine | Create SSH OTP role for daily access
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/ssh-otp/roles/daily"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      key_type: otp
+      default_user: "{{ common_admin_user }}"
+      allowed_users: "{{ common_admin_user }}"
+      cidr_list: "{{ vault_ssh_otp_cidr_list }}"
+      port: 22
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+
+# ------------------------------------------------------------------
+# Step 3: Mount SSH CA secrets engine
+# ------------------------------------------------------------------
+- name: Ssh Engine | Enable SSH CA secrets engine
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/mounts/ssh-ca"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      type: ssh
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+  when: "'ssh-ca/' not in vault_mounts.json"
+
+# ------------------------------------------------------------------
+# Step 4: Configure Ed25519 CA signing key
+# ------------------------------------------------------------------
+- name: Ssh Engine | Configure SSH CA with Ed25519 signing key
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/ssh-ca/config/ca"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      generate_signing_key: true
+      key_type: "{{ vault_ssh_ca_key_type }}"
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+  register: vault_ssh_ca_config
+  # Idempotency guard, same pattern as pki_engine.yml's Root/Intermediate CA
+  # generation: Vault's ssh-ca/config/ca rejects re-configuring an already
+  # -configured CA key with 400 "keys are already configured; delete them
+  # before reconfiguring" -- only run on the initial mount.
+  when: "'ssh-ca/' not in vault_mounts.json"
+
+# ------------------------------------------------------------------
+# Step 5: Create break-glass signing role
+# ------------------------------------------------------------------
+- name: Ssh Engine | Create SSH CA break-glass role
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/ssh-ca/roles/breakglass"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      key_type: ca
+      allow_user_certificates: true
+      default_user: "{{ common_admin_user }}"
+      allowed_users: "{{ common_admin_user }}"
+      ttl: "{{ vault_ssh_ca_ttl }}"
+      max_ttl: "{{ vault_ssh_ca_max_ttl }}"
+      default_extensions:
+        permit-pty: ""
+        permit-user-rc: ""
+      allowed_extensions: "permit-pty,permit-user-rc"
+      # algorithm_signer intentionally omitted: Vault's valid values are only
+      # ssh-rsa/rsa-sha2-256/rsa-sha2-512/default -- it must be left blank or
+      # "default" for non-RSA CA key types (this role's CA is Ed25519, set
+      # via vault_ssh_ca_key_type in ssh-ca/config/ca above). "ssh-ed25519"
+      # is not a recognized value and causes a 500 "unknown algorithm signer".
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+
+# ------------------------------------------------------------------
+# Step 6: Fetch and deploy CA public key for sshd
+# ------------------------------------------------------------------
+- name: Ssh Engine | Fetch SSH CA public key
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/ssh-ca/public_key"
+    method: GET
+    validate_certs: false
+    return_content: true
+    status_code:
+      - 200
+  register: vault_ssh_ca_pubkey
+
+- name: Ssh Engine | Deploy SSH CA public key for sshd
+  ansible.builtin.copy:
+    content: "{{ vault_ssh_ca_pubkey.content }}"
+    dest: /etc/ssh/trusted-user-ca-keys.pem
+    owner: root
+    group: root
+    mode: "0644"
+
+# ------------------------------------------------------------------
+# Step 7: Create Vault policy for SSH OTP issuance
+# ------------------------------------------------------------------
+- name: Ssh Engine | Create SSH OTP user policy
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/policies/acl/ssh-otp-user"
+    method: PUT
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      policy: |
+        path "ssh-otp/creds/daily" {
+          capabilities = ["create", "update"]
+        }
+        path "ssh-ca/sign/breakglass" {
+          capabilities = ["create", "update"]
+        }
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+
+# ------------------------------------------------------------------
+# Step 8: Rate limit OTP issuance (abuse/DoS protection)
+# ------------------------------------------------------------------
+- name: Ssh Engine | Create rate limit quota for SSH OTP issuance
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/quotas/rate-limit/ssh-otp-limit"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      path: "ssh-otp/creds/daily"
+      rate: 5
+      interval: "60s"
+    validate_certs: false
+    status_code:
+      - 200
+      - 204

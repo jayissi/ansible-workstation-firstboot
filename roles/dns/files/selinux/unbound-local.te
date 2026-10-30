@@ -1,0 +1,24 @@
+policy_module(unbound-local, 1.0.0)
+
+# Permanent architectural grant: allow Unbound to fetch RPZ zones
+# over HTTPS (port 443, labeled http_port_t in Fedora's policy).
+#
+# On Fedora, Unbound runs under named_t (shared domain with BIND),
+# not a separate unbound_t. The binary is labeled named_exec_t.
+#
+# This permission is narrowly scoped: only outbound TCP connect to
+# http_port_t (covers 80/443). Unbound will only exercise this when
+# rpz: url: is configured -- without that config, no HTTP connections
+# are attempted regardless of this rule being present.
+#
+# To disable: semodule -d unbound-local (or remove the RPZ url: config)
+# See: docs/decisions/ADR-0004-rpz-via-unbound-native-not-dnsconfd.md
+
+require {
+    type named_t;
+    type http_port_t;
+    class tcp_socket name_connect;
+}
+
+# Allow Unbound (named_t) to connect to HTTP/HTTPS ports for RPZ zone fetch
+allow named_t http_port_t:tcp_socket name_connect;
