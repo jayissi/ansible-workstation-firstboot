@@ -34,6 +34,13 @@ jobs:
     runs-on: ubuntu-latest
     env:
       YAMLLINT_CONFIG_FILE: lint/.yamllint.yml
+      # .vault_pass.txt is gitignored (real secret); ansible.cfg
+      # references it via vault_password_file, which makes
+      # ansible-playbook --syntax-check (run internally by
+      # ansible-lint) abort with a hard error if the file is
+      # missing. Point to /dev/null so Ansible finds a valid
+      # (empty) file instead of erroring on a missing path.
+      ANSIBLE_VAULT_PASSWORD_FILE: /dev/null
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
