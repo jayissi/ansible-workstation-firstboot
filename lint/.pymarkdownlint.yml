@@ -13,3 +13,10 @@ plugins:
     enabled: false
   md041:
     enabled: false
+  # MD051: linkbust is the dedicated link/fragment checker for this
+  # project. pymarkdown and linkbust disagree on anchor generation
+  # for headings containing underscores (pymarkdown preserves them,
+  # linkbust strips them via clean_inline). Disable here to avoid
+  # conflicting fragment validation; linkbust owns this check.
+  md051:
+    enabled: false

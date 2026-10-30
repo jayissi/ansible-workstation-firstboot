@@ -580,12 +580,12 @@ ad-hoc citations added during implementation.
 
 Corrected CIS RHEL 9 v3.0.0 control IDs currently used in this project:
 
-| Control | CIS ID | Description |
-| --- | --- | --- |
-| Faillock module enablement | 5.3.2.2 | Ensure pam_faillock module is enabled |
+| Control                     | CIS ID    | Description                                           |
+|-----------------------------|-----------|-------------------------------------------------------|
+| Faillock module enablement  | 5.3.2.2   | Ensure pam_faillock module is enabled                 |
 | Faillock deny/unlock values | 5.3.3.1.x | Ensure password failed attempts lockout is configured |
-| Pwquality minimum length | 5.3.3.2.2 | Ensure password length is configured |
-| Pwhistory remember | 5.3.3.3.1 | Ensure password history remember is configured |
+| Pwquality minimum length    | 5.3.3.2.2 | Ensure password length is configured                  |
+| Pwhistory remember          | 5.3.3.3.1 | Ensure password history remember is configured        |
 
 **Note:** Earlier drafts incorrectly cited 5.4.1 and 5.4.4 — those are
 shadow password suite parameters (password aging), not PAM controls.

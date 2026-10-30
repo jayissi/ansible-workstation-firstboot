@@ -23,25 +23,25 @@ SELinux context on Ansible's `remote_tmp` directory after reboot.
 Installs the base system and the secrets backbone (Vault CE). Roles
 execute in this order because each depends on the previous:
 
-| Order | Role | Responsibilities |
-| --- | --- | --- |
-| 1 | `common` | Preflight checks (LUKS/TPM2), system update, package installation, USBGuard, SSH banner, polkit rules, graphical target |
-| 2 | `dns` | Unbound (DNSSEC + DoT + blocklist), dnsconfd (NM integration, resolv.conf, split-DNS), browser DoH lockdown |
-| 3 | `avahi` | Hardened mDNS/DNS-SD (user-service publishing blocked, no HINFO) |
-| 4 | `vault` | Install, bootstrap TLS (ECDSA P-256), configure, init (age+TPM2), PKI engine, AppRole, Agent, production TLS, browser trust, secrets backup |
-| 5 | `proxy` | Nginx reverse proxy (`https://vault.local` → `:8200`), cert rotation via systemd path unit |
+| Order | Role     | Responsibilities                                                                                                                            |
+|-------|----------|---------------------------------------------------------------------------------------------------------------------------------------------|
+| 1     | `common` | Preflight checks (LUKS/TPM2), system update, package installation, USBGuard, SSH banner, polkit rules, graphical target                     |
+| 2     | `dns`    | Unbound (DNSSEC + DoT + blocklist), dnsconfd (NM integration, resolv.conf, split-DNS), browser DoH lockdown                                 |
+| 3     | `avahi`  | Hardened mDNS/DNS-SD (user-service publishing blocked, no HINFO)                                                                            |
+| 4     | `vault`  | Install, bootstrap TLS (ECDSA P-256), configure, init (age+TPM2), PKI engine, AppRole, Agent, production TLS, browser trust, secrets backup |
+| 5     | `proxy`  | Nginx reverse proxy (`https://vault.local` → `:8200`), cert rotation via systemd path unit                                                  |
 
 ### Phase 2 -- Harden
 
 System roles pull secrets from the now-running Vault instance. Roles
 are applied in dependency-aware tiers:
 
-| Tier | Roles | Why This Order |
-| --- | --- | --- |
-| Tier 0 -- Foundation | `crypto_policies`, `timesync`, `tuned`, `kernel_settings`, `journald`, `bootloader`, `certificate`, `systemd` | Crypto baseline, time sync, kernel tuning first |
-| Tier 1 -- Access | `sshd`, `auditd`, `tlog` | SSH and audit depend on crypto policies and time accuracy |
-| Tier 2 -- Network + Auth | `firewall`, `selinux`, `auth` | Firewall rules and SELinux policy first, then authselect + PAM hardening (depends on SELinux for its own policy module) |
-| Tier 3 -- Enforcement | `sudo`, `fapolicyd` | sudo confinement and application allowlisting are applied last; fapolicyd must run after all binaries are installed |
+| Tier                     | Roles                                                                                                         | Why This Order                                                                                                          |
+|--------------------------|---------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------|
+| Tier 0 -- Foundation     | `crypto_policies`, `timesync`, `tuned`, `kernel_settings`, `journald`, `bootloader`, `certificate`, `systemd` | Crypto baseline, time sync, kernel tuning first                                                                         |
+| Tier 1 -- Access         | `sshd`, `auditd`, `tlog`                                                                                      | SSH and audit depend on crypto policies and time accuracy                                                               |
+| Tier 2 -- Network + Auth | `firewall`, `selinux`, `auth`                                                                                 | Firewall rules and SELinux policy first, then authselect + PAM hardening (depends on SELinux for its own policy module) |
+| Tier 3 -- Enforcement    | `sudo`, `fapolicyd`                                                                                           | sudo confinement and application allowlisting are applied last; fapolicyd must run after all binaries are installed     |
 
 ### Phase 3 -- Finalize
 
@@ -90,10 +90,10 @@ exactly two Vault API paths to the bastion host, enabling the OTP and
 CA credential workflows (see
 [ADR-0006](decisions/ADR-0006-ssh-credential-gateway.md)):
 
-| Path | Purpose |
-| --- | --- |
-| `/v1/ssh-otp/creds/` | Request a one-time password |
-| `/v1/ssh-ca/sign/` | Request a signed SSH certificate |
+| Path                 | Purpose                          |
+|----------------------|----------------------------------|
+| `/v1/ssh-otp/creds/` | Request a one-time password      |
+| `/v1/ssh-ca/sign/`   | Request a signed SSH certificate |
 
 All other paths return HTTP 403. Defence in depth:
 
@@ -111,11 +111,11 @@ The dns role supports optional LAN-facing DNS caching, disabled by
 default. When enabled, the workstation serves as a caching DNS
 resolver for devices on the local network.
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `dns_lan_enabled` | `false` | Master toggle for LAN DNS |
-| `dns_lan_subnet` | `192.168.122.0/24` | Allowed client subnet |
-| `dns_lan_interface` | `""` | LAN-facing interface (empty = all) |
+| Variable            | Default            | Purpose                            |
+|---------------------|--------------------|------------------------------------|
+| `dns_lan_enabled`   | `false`            | Master toggle for LAN DNS          |
+| `dns_lan_subnet`    | `192.168.122.0/24` | Allowed client subnet              |
+| `dns_lan_interface` | `""`               | LAN-facing interface (empty = all) |
 
 When `dns_lan_enabled: true`:
 
@@ -222,14 +222,14 @@ DNS resolution, and more.
 A clear ownership boundary exists between dnsconfd and the Ansible dns
 role (see [ADR-0001](decisions/ADR-0001-unbound-dnsconfd-ownership.md)):
 
-| Directive | Owner | Mechanism |
-| --- | --- | --- |
-| DoT upstream servers | dnsconfd | `static_servers` in `dnsconfd.conf` |
-| `resolv.conf` | dnsconfd | Managed symlink |
-| `tls-cert-bundle` | dnsconfd | `certification_authority` pushes to Unbound runtime |
-| Security/performance/privacy | dns role | `unbound.conf.j2` template |
-| Site-local overrides | dns role | `/etc/unbound/conf.d/*.conf` drop-ins |
-| RPZ zones | dns role | Direct Unbound `conf.d` (not dnsconfd); see [ADR-0004](decisions/ADR-0004-rpz-via-unbound-native-not-dnsconfd.md) |
+| Directive                    | Owner    | Mechanism                                                                                                         |
+|------------------------------|----------|-------------------------------------------------------------------------------------------------------------------|
+| DoT upstream servers         | dnsconfd | `static_servers` in `dnsconfd.conf`                                                                               |
+| `resolv.conf`                | dnsconfd | Managed symlink                                                                                                   |
+| `tls-cert-bundle`            | dnsconfd | `certification_authority` pushes to Unbound runtime                                                               |
+| Security/performance/privacy | dns role | `unbound.conf.j2` template                                                                                        |
+| Site-local overrides         | dns role | `/etc/unbound/conf.d/*.conf` drop-ins                                                                             |
+| RPZ zones                    | dns role | Direct Unbound `conf.d` (not dnsconfd); see [ADR-0004](decisions/ADR-0004-rpz-via-unbound-native-not-dnsconfd.md) |
 
 ### Vault cert rotation
 

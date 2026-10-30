@@ -23,16 +23,16 @@ workstations. The hardening stack is applied in dependency-aware tiers
 
 ### Key Security Components
 
-| Component | Purpose |
-| --- | --- |
-| **SELinux** (enforcing) | Mandatory access control. Admin mapped to `staff_u`; system users to `unconfined_u` (GUI-safe). Custom policy modules for `vault_t` and DNS services. |
-| **fapolicyd** | Application allowlisting. SHA-256 integrity verification; only RPM-installed and explicitly trusted binaries execute. |
-| **AIDE** | File integrity monitoring. Database initialized *last* after all hardening is complete, capturing the fully hardened baseline. Daily checks via systemd timer. |
-| **USBGuard** | USB device allowlisting. Blocks unauthorized USB devices at the kernel level. |
-| **HashiCorp Vault CE** | Secrets backbone. ECDSA P-256 TLS via internal PKI engine; auto-rotating certificates; age+TPM2 encrypted unseal keys. |
-| **Auth** | Authselect + PAM hardening (faillock, pwquality, pwhistory). vault-ssh-helper OTP validation via `pam_exec`. Custom SELinux policy for sshd-to-Vault connectivity. |
-| **SSH Credential Gateway** | Nginx vhost (:8443) exposing only `/v1/ssh-otp/creds/` and `/v1/ssh-ca/sign/` to the bastion. All other paths return 403. |
-| **Auditd** | Kernel audit framework. 50 CIS/NIST/STIG-aligned syscall rules covering file access, privilege escalation, and authentication events. |
+| Component                  | Purpose                                                                                                                                                            |
+|----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **SELinux** (enforcing)    | Mandatory access control. Admin mapped to `staff_u`; system users to `unconfined_u` (GUI-safe). Custom policy modules for `vault_t` and DNS services.              |
+| **fapolicyd**              | Application allowlisting. SHA-256 integrity verification; only RPM-installed and explicitly trusted binaries execute.                                              |
+| **AIDE**                   | File integrity monitoring. Database initialized *last* after all hardening is complete, capturing the fully hardened baseline. Daily checks via systemd timer.     |
+| **USBGuard**               | USB device allowlisting. Blocks unauthorized USB devices at the kernel level.                                                                                      |
+| **HashiCorp Vault CE**     | Secrets backbone. ECDSA P-256 TLS via internal PKI engine; auto-rotating certificates; age+TPM2 encrypted unseal keys.                                             |
+| **Auth**                   | Authselect + PAM hardening (faillock, pwquality, pwhistory). vault-ssh-helper OTP validation via `pam_exec`. Custom SELinux policy for sshd-to-Vault connectivity. |
+| **SSH Credential Gateway** | Nginx vhost (:8443) exposing only `/v1/ssh-otp/creds/` and `/v1/ssh-ca/sign/` to the bastion. All other paths return 403.                                          |
+| **Auditd**                 | Kernel audit framework. 50 CIS/NIST/STIG-aligned syscall rules covering file access, privilege escalation, and authentication events.                              |
 
 ### CIS/STIG Alignment
 
@@ -73,14 +73,14 @@ Notable controls implemented:
 
 ### Secrets Protection
 
-| Secret | Protection |
-| --- | --- |
-| Unseal keys | age-encrypted, TPM2-bound via `systemd-creds` |
-| Root token | age-encrypted + passphrase backup (`.age.pass`) |
-| AppRole secret_id | age-encrypted, same TPM2 binding |
-| TLS private key | SELinux `vault_conf_t`, immutable attr, auditd watch |
-| Vault Agent token | `/opt/vault/agent-run/` (0700), `tmpfiles.d` purge on boot |
-| GRUB password hash | Stored in Vault KV, fetched at deploy time |
+| Secret                  | Protection                                                                      |
+|-------------------------|---------------------------------------------------------------------------------|
+| Unseal keys             | age-encrypted, TPM2-bound via `systemd-creds`                                   |
+| Root token              | age-encrypted + passphrase backup (`.age.pass`)                                 |
+| AppRole secret_id       | age-encrypted, same TPM2 binding                                                |
+| TLS private key         | SELinux `vault_conf_t`, immutable attr, auditd watch                            |
+| Vault Agent token       | `/opt/vault/agent-run/` (0700), `tmpfiles.d` purge on boot                      |
+| GRUB password hash      | Stored in Vault KV, fetched at deploy time                                      |
 | vault-ssh-helper config | `/etc/vault-ssh-helper.d/config.hcl`, mode 0640, `vault_conf_t` SELinux context |
-| SSH CA public key | `/etc/ssh/trusted-user-ca-keys.pem`, deployed from Vault `ssh-ca/config/ca` |
-| Ansible Vault | `vault.yml` encrypted with `ansible-vault` |
+| SSH CA public key       | `/etc/ssh/trusted-user-ca-keys.pem`, deployed from Vault `ssh-ca/config/ca`     |
+| Ansible Vault           | `vault.yml` encrypted with `ansible-vault`                                      |

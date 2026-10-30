@@ -140,7 +140,7 @@ ansible-workstation-firstboot/
 | [docs/CONVENTIONS.md](docs/CONVENTIONS.md)   | Naming, style, and linter conventions           |
 | [SECURITY.md](SECURITY.md)                   | Security model and vulnerability reporting      |
 | [CONTRIBUTING.md](CONTRIBUTING.md)           | Development setup and workflow                  |
-| [CHANGELOG.md](docs/CHANGELOG.md)             | Release history                                 |
+| [CHANGELOG.md](docs/CHANGELOG.md)            | Release history                                 |
 
 ## License
 

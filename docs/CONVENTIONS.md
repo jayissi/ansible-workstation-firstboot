@@ -12,7 +12,7 @@ first PR; reviewers will check against it.
 - [Variable Naming](#variable-naming)
 - [Fully Qualified Collection Names (FQCN)](#fully-qualified-collection-names-fqcn)
 - [Booleans](#booleans)
-- [import\_tasks vs include\_tasks](#import_tasks-vs-include_tasks)
+- [import\_tasks vs include\_tasks](#importtasks-vs-includetasks)
 - [File and Directory Naming](#file-and-directory-naming)
 - [Role Structure](#role-structure)
 - [Key Ordering in Task Blocks](#key-ordering-in-task-blocks)
@@ -32,13 +32,13 @@ imperative verb. No trailing period.
 
 ### Examples by file
 
-| Task file              | Stem              | Full task name                                        |
-|------------------------|-------------------|-------------------------------------------------------|
-| `configure.yml`        | `Configure`       | `Configure \| Deploy vault.hcl configuration`         |
-| `pki_engine.yml`       | `Pki Engine`      | `Pki Engine \| Mount Root CA PKI engine`              |
-| `disable_swap.yml`     | `Disable Swap`    | `Disable Swap \| Mask zram swap generator`            |
-| `tls_bootstrap.yml`    | `Tls Bootstrap`   | `Tls Bootstrap \| Generate self-signed CA certificate` |
-| `browser_trust.yml`    | `Browser Trust`   | `Browser Trust \| Import CA into system trust store`   |
+| Task file           | Stem            | Full task name                                         |
+|---------------------|-----------------|--------------------------------------------------------|
+| `configure.yml`     | `Configure`     | `Configure \| Deploy vault.hcl configuration`          |
+| `pki_engine.yml`    | `Pki Engine`    | `Pki Engine \| Mount Root CA PKI engine`               |
+| `disable_swap.yml`  | `Disable Swap`  | `Disable Swap \| Mask zram swap generator`             |
+| `tls_bootstrap.yml` | `Tls Bootstrap` | `Tls Bootstrap \| Generate self-signed CA certificate` |
+| `browser_trust.yml` | `Browser Trust` | `Browser Trust \| Import CA into system trust store`   |
 
 ### Dispatcher `main.yml` files
 
@@ -120,11 +120,11 @@ All variables use `snake_case`. No `camelCase`, no `UPPERCASE`.
 
 ### Scope prefixes
 
-| Scope | Pattern | Example |
-|---|---|---|
-| Role defaults (public API) | `{role_name}_{variable}` | `dns_do_ip4`, `vault_pki_key_type` |
-| Registered / internal | `__{role_name}_{variable}` | `__dns_threads`, `__vault_init_output` |
-| Loop variables | `__` prefix | `__pkg`, `__svc` |
+| Scope                      | Pattern                    | Example                                |
+|----------------------------|----------------------------|----------------------------------------|
+| Role defaults (public API) | `{role_name}_{variable}`   | `dns_do_ip4`, `vault_pki_key_type`     |
+| Registered / internal      | `__{role_name}_{variable}` | `__dns_threads`, `__vault_init_output` |
+| Loop variables             | `__` prefix                | `__pkg`, `__svc`                       |
 
 ### Role defaults -- public API
 
@@ -188,21 +188,21 @@ Every module call must use its FQCN. No bare module names.
 
 Common FQCNs used in this project:
 
-| Bare name | FQCN |
-|---|---|
-| `command` | `ansible.builtin.command` |
-| `shell` | `ansible.builtin.shell` |
-| `template` | `ansible.builtin.template` |
-| `copy` | `ansible.builtin.copy` |
-| `file` | `ansible.builtin.file` |
-| `dnf` | `ansible.builtin.dnf` |
+| Bare name         | FQCN                              |
+|-------------------|-----------------------------------|
+| `command`         | `ansible.builtin.command`         |
+| `shell`           | `ansible.builtin.shell`           |
+| `template`        | `ansible.builtin.template`        |
+| `copy`            | `ansible.builtin.copy`            |
+| `file`            | `ansible.builtin.file`            |
+| `dnf`             | `ansible.builtin.dnf`             |
 | `systemd_service` | `ansible.builtin.systemd_service` |
-| `set_fact` | `ansible.builtin.set_fact` |
-| `debug` | `ansible.builtin.debug` |
-| `assert` | `ansible.builtin.assert` |
-| `uri` | `ansible.builtin.uri` |
-| `import_tasks` | `ansible.builtin.import_tasks` |
-| `include_tasks` | `ansible.builtin.include_tasks` |
+| `set_fact`        | `ansible.builtin.set_fact`        |
+| `debug`           | `ansible.builtin.debug`           |
+| `assert`          | `ansible.builtin.assert`          |
+| `uri`             | `ansible.builtin.uri`             |
+| `import_tasks`    | `ansible.builtin.import_tasks`    |
+| `include_tasks`   | `ansible.builtin.include_tasks`   |
 
 ### Enforcement
 
@@ -235,11 +235,11 @@ yamllint `truthy` rule with `allowed-values: ["true", "false"]` (config:
 
 ## import_tasks vs include_tasks
 
-| Use `import_tasks` when... | Use `include_tasks` when... |
-|---|---|
-| Sub-file is unconditional | Sub-file has a `when:` condition |
-| Execution order is fixed | Sub-file needs looping |
-| Tags should propagate down | Tags should NOT propagate |
+| Use `import_tasks` when...        | Use `include_tasks` when...             |
+|-----------------------------------|-----------------------------------------|
+| Sub-file is unconditional         | Sub-file has a `when:` condition        |
+| Execution order is fixed          | Sub-file needs looping                  |
+| Tags should propagate down        | Tags should NOT propagate               |
 | File contains only static content | File uses dynamic variables in the path |
 
 ### Typical dispatcher pattern (import_tasks)
@@ -282,15 +282,15 @@ This convention is **documented only**, not auto-enforced.
 
 ## File and Directory Naming
 
-| Category | Convention | Example |
-|---|---|---|
-| Task files | `lowercase_underscores.yml` | `pki_engine.yml`, `disable_swap.yml` |
-| Templates | `descriptive-name.ext.j2` (match target filename) | `vault.hcl.j2`, `unbound.conf.j2` |
-| Vars files | OS family in Title Case | `RedHat.yml` |
-| Role names | `lowercase` (no underscores) | `dns`, `vault`, `common` |
-| Static files | Match the target filename | `sshd-vault-ssh-helper.te` |
-| Ansible YAML | `.yml` extension | `main.yml`, `configure.yml` |
-| Non-Ansible tool configs | `.yaml` acceptable | `.yamllint.yml`, `.markdownlint-cli2.yaml` |
+| Category                 | Convention                                        | Example                                    |
+|--------------------------|---------------------------------------------------|--------------------------------------------|
+| Task files               | `lowercase_underscores.yml`                       | `pki_engine.yml`, `disable_swap.yml`       |
+| Templates                | `descriptive-name.ext.j2` (match target filename) | `vault.hcl.j2`, `unbound.conf.j2`          |
+| Vars files               | OS family in Title Case                           | `RedHat.yml`                               |
+| Role names               | `lowercase` (no underscores)                      | `dns`, `vault`, `common`                   |
+| Static files             | Match the target filename                         | `sshd-vault-ssh-helper.te`                 |
+| Ansible YAML             | `.yml` extension                                  | `main.yml`, `configure.yml`                |
+| Non-Ansible tool configs | `.yaml` acceptable                                | `.yamllint.yml`, `.markdownlint-cli2.yaml` |
 
 ### Why `.yml` for Ansible files?
 
@@ -466,23 +466,23 @@ Don't comment the obvious:
 
 ## Enforcement Summary
 
-| Convention | Enforced by | Config file |
-|---|---|---|
-| FQCN (no bare modules) | ansible-lint `fqcn` rule | `.ansible-lint` (`profile: production`) |
-| Variable naming pattern | ansible-lint `var-naming` rule | `.ansible-lint` (`var_naming_pattern`) |
-| Loop variable prefix | ansible-lint `loop_var_prefix` | `.ansible-lint` (`loop_var_prefix: "__"`) |
-| Key ordering in tasks | ansible-lint `key-order` rule | `.ansible-lint` (`profile: production`) |
-| Jinja2 template extension | ansible-lint `jinja[template-extension]` | `.ansible-lint` (`enable_list`) |
-| Booleans `true`/`false` only | yamllint `truthy` rule | `lint/.yamllint.yml` |
-| Line length ≤ 200 | yamllint `line-length` rule | `lint/.yamllint.yml` |
-| Octal values explicit | yamllint `octal-values` rule | `lint/.yamllint.yml` |
-| Task naming (`{Stem} \| ...`) | **PR review** | This document |
-| Handler naming | **PR review** | This document |
-| `import_tasks` vs `include_tasks` | **PR review** | This document |
-| File/directory naming | **PR review** | This document |
-| Role structure / split threshold | **PR review** | This document |
-| Playbook key ordering | **PR review** | This document |
-| Comment style | **PR review** | This document |
+| Convention                        | Enforced by                              | Config file                               |
+|-----------------------------------|------------------------------------------|-------------------------------------------|
+| FQCN (no bare modules)            | ansible-lint `fqcn` rule                 | `.ansible-lint` (`profile: production`)   |
+| Variable naming pattern           | ansible-lint `var-naming` rule           | `.ansible-lint` (`var_naming_pattern`)    |
+| Loop variable prefix              | ansible-lint `loop_var_prefix`           | `.ansible-lint` (`loop_var_prefix: "__"`) |
+| Key ordering in tasks             | ansible-lint `key-order` rule            | `.ansible-lint` (`profile: production`)   |
+| Jinja2 template extension         | ansible-lint `jinja[template-extension]` | `.ansible-lint` (`enable_list`)           |
+| Booleans `true`/`false` only      | yamllint `truthy` rule                   | `lint/.yamllint.yml`                      |
+| Line length ≤ 200                 | yamllint `line-length` rule              | `lint/.yamllint.yml`                      |
+| Octal values explicit             | yamllint `octal-values` rule             | `lint/.yamllint.yml`                      |
+| Task naming (`{Stem} \| ...`)     | **PR review**                            | This document                             |
+| Handler naming                    | **PR review**                            | This document                             |
+| `import_tasks` vs `include_tasks` | **PR review**                            | This document                             |
+| File/directory naming             | **PR review**                            | This document                             |
+| Role structure / split threshold  | **PR review**                            | This document                             |
+| Playbook key ordering             | **PR review**                            | This document                             |
+| Comment style                     | **PR review**                            | This document                             |
 
 All linters run via `make lint` inside the Podman container defined in
 `lint/Containerfile.lint`. See [../CONTRIBUTING.md](../CONTRIBUTING.md) for
