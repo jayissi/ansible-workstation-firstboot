@@ -33,7 +33,7 @@
     group: root
     mode: "0755"
 
-- name: Browser Trust | Deploy Firefox enterprise policy (CA trust + DoH disable + extensions)
+- name: Browser Trust | Deploy Firefox enterprise policy (CA trust + DoH disable + extensions + bookmarks)
   ansible.builtin.copy:
     dest: /etc/firefox/policies/policies.json
     content: |
@@ -46,16 +46,24 @@
             "Enabled": false,
             "Locked": true
           },
+          "DisplayBookmarksToolbar": "always",
+          "ManagedBookmarks": [
+            { "toplevel_name": "Managed" },
+            { "name": "Vault", "url": "https://vault.local:8200" },
+            { "name": "Vault Status", "url": "https://status.vault.local" }
+          ],
           "ExtensionSettings": {
             "uBlock0@raymondhill.net": {
               "installation_mode": "force_installed",
               "install_url": "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi",
-              "private_browsing": true
+              "private_browsing": true,
+              "default_area": "navbar"
             },
             "addon@blum.coffee": {
               "installation_mode": "force_installed",
               "install_url": "https://addons.mozilla.org/firefox/downloads/latest/vaultpass/latest.xpi",
-              "private_browsing": true
+              "private_browsing": true,
+              "default_area": "navbar"
             }
           }
         }

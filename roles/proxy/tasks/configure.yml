@@ -33,7 +33,7 @@
     body_format: json
     body:
       common_name: "{{ vault_pki_nginx_cn }}"
-      alt_names: "{{ proxy_server_name }}"
+      alt_names: "{{ proxy_server_name }},status.vault.local"
       ttl: "{{ proxy_leaf_ttl | default('2160h') }}"
     validate_certs: false
     status_code:
@@ -71,11 +71,37 @@
     mode: "0444"
   when: __proxy_leaf_cert is not skipped and __proxy_leaf_cert.json is defined
 
+- name: Configure | Build client CA chain (Intermediate + Root) for mutual TLS
+  ansible.builtin.shell:
+    cmd: >-
+      cat /etc/vault.d/certs/intermediate.crt /etc/vault.d/certs/root.crt
+      > /etc/nginx/certs/client-ca-chain.crt
+  changed_when: true
+
+- name: Configure | Set permissions on client CA chain
+  ansible.builtin.file:
+    path: /etc/nginx/certs/client-ca-chain.crt
+    owner: root
+    group: root
+    mode: "0444"
+
 - name: Configure | Restore SELinux context on proxy certs
   ansible.builtin.command:
     cmd: restorecon -RF /etc/nginx/certs
   changed_when: true
   when: __proxy_leaf_cert is not skipped and __proxy_leaf_cert.json is defined
+
+# ---------------------------------------------------------------------------
+# Vault health status vhost -- https://status.vault.local -> /v1/sys/health
+# ---------------------------------------------------------------------------
+- name: Configure | Deploy Vault status endpoint configuration
+  ansible.builtin.template:
+    src: vault-status.conf.j2
+    dest: '{{ __proxy_conf_d_dir }}/vault-status.conf'
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload nginx
 
 # ---------------------------------------------------------------------------
 # SSH credential gateway -- narrow bastion-facing vhost for OTP / CA creds

@@ -193,29 +193,51 @@
     group: root
     mode: '0644'
 
-- name: Configure | Deploy Chrome extension force-install policy (uBlock Origin + VaultPass)
+- name: Configure | Remove legacy Chrome extension policy files (replaced by extension-settings.json)
+  ansible.builtin.file:
+    path: "/etc/opt/chrome/policies/managed/{{ item }}"
+    state: absent
+  loop:
+    - extensions.json
+    - incognito-extensions.json
+
+- name: Configure | Deploy Chrome extension settings policy (force-install + toolbar pin)
   ansible.builtin.copy:
-    dest: /etc/opt/chrome/policies/managed/extensions.json
+    dest: /etc/opt/chrome/policies/managed/extension-settings.json
     content: |
       {
-        "ExtensionInstallForcelist": [
-          "cjpalhdlnbpafiamejdnhcphjbkeiagm;https://clients2.google.com/service/update2/crx",
-          "kbndeonibamcpiibocdhlagccdlmefco;https://clients2.google.com/service/update2/crx"
+        "ExtensionSettings": {
+          "cjpalhdlnbpafiamejdnhcphjbkeiagm": {
+            "installation_mode": "force_installed",
+            "update_url": "https://clients2.google.com/service/update2/crx",
+            "toolbar_pin": "force_pinned"
+          },
+          "kbndeonibamcpiibocdhlagccdlmefco": {
+            "installation_mode": "force_installed",
+            "update_url": "https://clients2.google.com/service/update2/crx",
+            "toolbar_pin": "force_pinned"
+          }
+        },
+        "MandatoryExtensionsForIncognitoNavigation": [
+          "cjpalhdlnbpafiamejdnhcphjbkeiagm",
+          "kbndeonibamcpiibocdhlagccdlmefco"
         ]
       }
     owner: root
     group: root
     mode: '0644'
 
-- name: Configure | Deploy Chrome incognito extensions policy
+- name: Configure | Deploy Chrome managed bookmarks policy
   ansible.builtin.copy:
-    dest: /etc/opt/chrome/policies/managed/incognito-extensions.json
+    dest: /etc/opt/chrome/policies/managed/bookmarks.json
     content: |
       {
-        "MandatoryExtensionsForIncognitoNavigation": [
-          "cjpalhdlnbpafiamejdnhcphjbkeiagm",
-          "kbndeonibamcpiibocdhlagccdlmefco"
-        ]
+        "ManagedBookmarks": [
+          { "toplevel_name": "Managed" },
+          { "name": "Vault", "url": "https://vault.local:8200" },
+          { "name": "Vault Status", "url": "https://status.vault.local" }
+        ],
+        "BookmarkBarEnabled": true
       }
     owner: root
     group: root

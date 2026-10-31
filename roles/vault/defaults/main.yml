@@ -22,6 +22,7 @@ vault_selinux_dir: /opt/vault/selinux
 
 vault_tls_cert_file: "{{ vault_cert_dir }}/server-chain.crt"
 vault_tls_key_file: "{{ vault_cert_dir }}/server.key"
+vault_tls_client_ca_file: "{{ vault_cert_dir }}/root.crt"
 
 # Nginx proxy cert directory (separate leaf cert, vault.local SAN only)
 vault_proxy_cert_dir: /etc/nginx/certs

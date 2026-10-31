@@ -39,8 +39,13 @@
 # ------------------------------------------------------------------
 - name: Cert Auth | Read Intermediate CA certificate
   ansible.builtin.slurp:
-    src: "{{ vault_cert_dir }}/root.crt"
+    src: "{{ vault_cert_dir }}/intermediate.crt"
   register: _vault_int_ca_cert
+
+- name: Cert Auth | Read Root CA certificate
+  ansible.builtin.slurp:
+    src: "{{ vault_cert_dir }}/root.crt"
+  register: _vault_root_ca_cert
 
 # ------------------------------------------------------------------
 # Configure trusted CA certificate for client cert auth
@@ -54,7 +59,7 @@
     body_format: json
     body:
       display_name: "workstation-client"
-      certificate: "{{ _vault_int_ca_cert.content | b64decode }}"
+      certificate: "{{ (_vault_int_ca_cert.content | b64decode) ~ '\n' ~ (_vault_root_ca_cert.content | b64decode) }}"
       allowed_common_names:
         - "{{ vault_pki_client_auth_cn }}"
       token_policies:

@@ -16,6 +16,7 @@ proxy_leaf_ttl: '2160h'
 proxy_tls_cert: /etc/nginx/certs/server-chain.crt
 proxy_tls_key: /etc/nginx/certs/server.key
 proxy_tls_ca: /etc/nginx/certs/root.crt
+proxy_tls_client_ca: /etc/nginx/certs/client-ca-chain.crt
 proxy_tls_protocols: 'TLSv1.2 TLSv1.3'
 
 # ---------------------------------------------------------------------------

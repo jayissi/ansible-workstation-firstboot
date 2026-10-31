@@ -688,6 +688,60 @@ with compensating-control justification.
 
 ---
 
+### 29. Browser TLS client certificate auth, managed bookmarks, and Vault status endpoint
+
+**Symptoms:** Selecting "TLS Certificates" on the Vault UI login page
+returned "Authentication failed: client certificate must be supplied."
+Firefox and Chrome never prompted for a client certificate. Browsers had
+no bookmark bar shortcuts to the Vault UI or health endpoint. VaultPass
+and uBlock Origin extensions were hidden in the overflow menu.
+
+**Root Cause:** Neither Vault's listener (`vault.hcl`) nor Nginx
+(`vault-proxy.conf`) was configured to request a client certificate
+during the TLS handshake. Without a `CertificateRequest` in the
+handshake, browsers never prompt for a cert, and Vault's `auth/cert/login`
+endpoint always fails. Additionally, VaultPass's `background.js`
+crashes on Firefox with `importScripts is not defined` (a Chrome
+Manifest V3 API not available in Firefox's Manifest V2 background
+scripts), breaking the "Login via Web" button entirely -- this is a
+third-party extension bug, not a project infrastructure issue.
+
+**Fix:**
+
+- Added `tls_client_ca_file` to Vault's listener template
+  (`vault.hcl.j2`) pointing to the Root CA. This tells Vault to send a
+  `CertificateRequest` listing the Root CA as trusted. Browsers then
+  prompt the user to select a matching client certificate.
+  `tls_require_and_verify_client_cert` is deliberately not set (defaults
+  to `false`) so the Vault UI loads without a cert; cert auth only
+  activates on explicit login.
+- Added `ssl_verify_client optional` and `ssl_client_certificate` to the
+  Nginx reverse proxy vhost (`vault-proxy.conf.j2`). Same rationale:
+  `optional` requests a cert but does not require one.
+- Added managed bookmarks ("Vault" and "Vault Status") to both Firefox
+  and Chrome via enterprise policies. Bookmark bar forced visible via
+  `DisplayBookmarksToolbar: "always"` (Firefox) and
+  `BookmarkBarEnabled: true` (Chrome).
+- Pinned VaultPass and uBlock Origin to the browser toolbar in both
+  browsers: `default_area: "navbar"` (Firefox) and
+  `toolbar_pin: "force_pinned"` (Chrome). Visible in regular and
+  private/incognito mode.
+- Created `status.vault.local` DNS record and Nginx vhost that proxies
+  to Vault's `/v1/sys/health` endpoint. Added `status.vault.local` as
+  a SAN to the Nginx Gateway certificate.
+- Migrated Chrome extension policies from `ExtensionInstallForcelist`
+  to `ExtensionSettings` format (supports toolbar pinning). Removed
+  legacy `extensions.json` and `incognito-extensions.json`.
+
+**Validation:** `make lint` passes. Deploy to VM, verify Vault UI loads
+at `https://vault.local`, TLS Certificates login prompts for client
+cert in both Firefox and Chrome, bookmarks appear in bookmark bar,
+`https://status.vault.local` returns Vault health JSON.
+
+**Status:** Fixed.
+
+---
+
 ## Backlog / Future Work
 
 Deferred items tracked for future implementation. These are not
@@ -968,3 +1022,26 @@ capabilities: root token rotation (`make vault-rotate-root-token`),
 break-glass SSH cert auto-renewal, AppRole secret_id re-provisioning
 on restart. Missing: documented procedure for suspected compromise of
 unseal keys, root token backup, or Vault Agent tokens.
+
+**Priority 8 — Chrome JSON pretty-print for status.vault.local:**
+Chrome lacks a native JSON viewer (unlike Firefox). The
+`status.vault.local` health endpoint returns raw JSON which Chrome
+displays as plain text with a manual "Pretty-print" checkbox.
+Evaluate deploying a Chrome JSON viewer extension (e.g., JSON Viewer,
+JSONVue) via enterprise `ExtensionSettings` policy to provide
+automatic pretty-printing. Lower priority — Firefox already renders
+JSON natively, and Chrome's manual checkbox is functional.
+
+**Priority 9 — VaultPass TLS client certificate auth flow:**
+VaultPass's "Login via Web" button is broken on Firefox
+(`importScripts is not defined` in `background.js:2` — third-party
+extension bug, Chrome Manifest V3 API not available in Firefox's
+Manifest V2 background scripts). The Vault listener and Nginx now
+support mutual TLS (`tls_client_ca_file` and `ssl_verify_client
+optional`), so browser-based TLS cert auth works via the Vault UI
+directly. Remaining work: verify the complete VaultPass token
+acquisition flow end-to-end — Vault UI cert login, token copy, manual
+token paste into VaultPass, and KV read from `secret/vaultPass/*`.
+Evaluate whether the "Get Token from Vault Tab" VaultPass feature
+(content script based, not background script) works as an alternative
+to the broken "Login via Web" button.

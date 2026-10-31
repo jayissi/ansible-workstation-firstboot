@@ -36,6 +36,9 @@ dns_local_data:
   - name: 'vault.local'
     type: 'A'
     value: '127.0.0.1'
+  - name: 'status.vault.local'
+    type: 'A'
+    value: '127.0.0.1'
 
 dns_local_data_ptr:
   - ip: '127.0.0.1'

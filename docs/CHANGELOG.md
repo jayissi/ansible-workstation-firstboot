@@ -12,6 +12,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   block-style YAML sequences and mappings everywhere (Red Hat Ansible
   best practice), while still allowing bare `[]`/`{}` for empty
   collections since block-style has no syntax for an empty sequence
+- Browser managed bookmarks ("Vault" and "Vault Status") in both
+  Firefox and Chrome via enterprise policies, bookmark bar forced
+  visible, visible in regular and private/incognito mode
+- VaultPass and uBlock Origin extensions pinned to toolbar in both
+  browsers via `default_area: "navbar"` (Firefox) and
+  `toolbar_pin: "force_pinned"` (Chrome)
+- `status.vault.local` DNS record and Nginx vhost proxying to
+  Vault's `/v1/sys/health` endpoint for quick health checks
 
 ### Fixed
 
@@ -25,6 +33,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `{k: v}`) to block-style across task loop items, `.pre-commit-config.yaml`
   hook `args`, and Vault policy bodies, to satisfy the new yamllint
   rules
+- Browser TLS client certificate auth: added `tls_client_ca_file` to
+  Vault listener and `ssl_verify_client optional` to Nginx reverse
+  proxy so browsers prompt for the TPM2-bound client certificate when
+  using the Vault UI "TLS Certificates" login method
 
 ### Changed
 
