@@ -479,7 +479,7 @@ distinct (source domain, target type) pair. Each module ships as a
 | `fapolicyd-gdm.te`         | `fapolicyd_t`               | `xdm_t`                |
 | `logind-usbguard.te`       | `systemd_logind_t`          | `usbguard_t`           |
 | `usbguard-gdm.te`          | `usbguard_t`                | `xdm_t`                |
-| `auditctl-log.te`          | `auditctl_t`                | `var_log_t`            |
+| `auditctl-log.te`          | `auditctl_t`                | `auditd_log_t`         |
 | `sshd-vault-ssh-helper.te` | `sshd_t` / `sshd_session_t` | `vault_cluster_port_t` |
 
 The handler in `roles/auth/handlers/main.yml` compiles **all** `*.te`

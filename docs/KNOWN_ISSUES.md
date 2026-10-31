@@ -752,6 +752,144 @@ re-encryption proxy, bookmarks appear in bookmark bar,
 
 ---
 
+### 30. Vault syslog audit backend fails under `vault_t` SELinux domain
+
+**Symptoms:** Vault returns HTTP 500 on ALL API requests after reboot.
+`vault audit enable syslog` fails with "error writing to syslog: write
+unixgram @->/run/systemd/journal/dev-log: write: permission denied".
+`ausearch -m avc` shows zero denials.
+
+**Root Cause:** The custom `vault_t` SELinux domain had zero
+`unix_dgram_socket` permissions for the `devlog_t` target type. When a
+domain has no rules at all for an object class (not even `dontaudit`),
+the SELinux kernel module denies access but may not emit an AVC audit
+record — making the denial invisible to `ausearch` and `audit2allow`.
+Confirmed via `sesearch -A -s vault_t -c unix_dgram_socket` returning
+empty results, and `seinfo -a syslog_client_type -x | grep vault`
+confirming vault_t was NOT in the `syslog_client_type` attribute. Vault
+requires ALL audit backends to succeed; when syslog failed, every API
+request returned 500 (by design). Same failure class as
+hashicorp/vault#31670 (AppArmor on Ubuntu).
+
+**Fix:** Added `devlog_t` type to the require block and
+`allow vault_t devlog_t:unix_dgram_socket sendto;` to `vault.te`. Also
+added `write` to `self:unix_dgram_socket` class declaration. Bumped
+policy to v1.4.0.
+
+**Validation:** `vault audit enable syslog tag=vault-audit facility=AUTH`
+succeeds. `vault audit list` shows both `file/` and `syslog/` backends.
+`journalctl -t vault-audit` shows audit entries.
+
+**Status:** Fixed.
+
+---
+
+### 31. VaultPass NetworkError on Firefox (cert dialog blocks extension fetch)
+
+**Symptoms:** VaultPass popup shows "NetworkError when attempting to
+fetch resource" or "No matching key found for this page" despite API
+calls returning 200 in Nginx access logs. VaultPass DevTools Network tab
+(via about:debugging) shows successful LIST and READ requests, but the
+popup never renders matched credentials.
+
+**Root Cause:** Nginx's `ssl_verify_client optional` triggers a TLS
+`CertificateRequest` during connection establishment. Firefox prompts
+for a client certificate separately for the page context
+(`https://vault.local`) and the extension context
+(`moz-extension://...`). The second cert dialog for the extension origin
+blocks VaultPass's `fetch()` calls, causing a NetworkError if the user
+doesn't respond quickly enough or the popup closes.
+
+**Fix:** Firefox enterprise policy sets
+`security.default_personal_cert = "Select Automatically"` (locked).
+Firefox auto-selects the client certificate without prompting for any
+origin, eliminating the dialog that blocked VaultPass. Chrome equivalent:
+`AutoSelectCertificateForUrls` policy with issuer filter
+`O=Local Lab Infrastructure`.
+
+**Validation:** VaultPass popup Keys tab displays matched credentials
+with copy/fill buttons. No cert dialog appears. VaultPass "Add Key" and
+"Save Key" work end-to-end.
+
+**Status:** Fixed.
+
+---
+
+### 32. Chrome Manifest V2 extension deprecation (uBlock Origin + VaultPass)
+
+**Symptoms:** Chrome extensions page shows no installed extensions
+despite `force_installed` enterprise policy. Chrome Web Store shows
+"This item's installation is required by your organization" but errors
+with "blocked by the administrator." Chrome version 156.
+
+**Root Cause:** Chrome 139+ fully removed Manifest V2 extension support.
+The `ExtensionManifestV2Availability` enterprise policy was removed in
+Chrome 139. Both uBlock Origin (`cjpalhdlnbpafiamejdnhcphjbkeiagm`) and
+VaultPass (`kbndeonibamcpiibocdhlagccdlmefco`) are MV2-only extensions
+with no MV3 versions available.
+
+**Fix:** Removed all Chrome extension policies. Chrome retains only
+bookmarks, DNS security, and auto-cert-select policies. Extensions are
+Firefox-only for this project.
+
+**Validation:** No extension-related errors in Chrome. Chrome policies
+clean (bookmarks.json + dns-security.json only).
+
+**Status:** Fixed (architectural constraint — MV2 is permanently removed
+from Chrome).
+
+---
+
+### 33. Vault audit log rotation SELinux denial
+
+**Symptoms:** `logrotate.service` fails with
+`error: stat of /var/log/vault/audit.log failed: Permission denied`.
+`systemctl list-units --state=failed` shows logrotate as failed.
+
+**Root Cause:** The Vault audit log files carry the `vault_log_t` SELinux
+label. The `logrotate_t` SELinux domain has no rules allowing access to
+`vault_log_t` files. The `su vault vault` logrotate directive switches
+the Unix UID but logrotate's SELinux process context remains
+`logrotate_t`, which still cannot access `vault_log_t` objects.
+
+**Fix:** Created `logrotate-vault.te` SELinux module granting
+`logrotate_t` read/write/rename/unlink on `vault_log_t` files and
+search/read on `vault_log_t` directories. Logrotate config updated to
+use `copytruncate` (truncates in-place, avoids file creation with wrong
+SELinux labels) and `su vault vault`.
+
+**Validation:** `logrotate -d /etc/logrotate.d/vault-audit` succeeds
+with no permission errors. `systemctl list-units --state=failed` shows
+no logrotate failure.
+
+**Status:** Fixed.
+
+---
+
+### 34. CRL bootstrap `validate_certs` disabled (checkov CKV_ANSIBLE_2)
+
+**Symptoms:** checkov linter fails with
+`CKV_ANSIBLE_2: Ensure that certificate validation isn't disabled with get_url`
+on the CRL bootstrap task.
+
+**Root Cause:** The CRL bootstrap used `ansible.builtin.get_url` with
+`validate_certs: false` to fetch the CRL from localhost Vault, which
+uses the project's private CA. The `get_url` module doesn't support
+`ca_path` for custom CA trust.
+
+**Fix:** Replaced `get_url` with `ansible.builtin.uri` using
+`ca_path: /etc/nginx/certs/root.crt` for proper TLS validation against
+the private CA. URL changed from `127.0.0.1:8200` to
+`vault.local:8200` to match the certificate's SAN. Two-step fetch:
+`uri` returns content, `copy` writes it to disk.
+
+**Validation:** All 18 linters pass with zero suppressions. CRL
+bootstrap validates TLS against the private Root CA.
+
+**Status:** Fixed.
+
+---
+
 ## Backlog / Future Work
 
 Deferred items tracked for future implementation. These are not
@@ -1001,11 +1139,13 @@ allowlists (defense-in-depth, API surface reduction)?
 **Priority 4 — VaultPass extension updates and browser security
 (§2.d):**
 VaultPass is a third-party browser extension, not maintained by
-HashiCorp. Updates are handled by the browser's extension auto-update
-mechanism (Firefox AMO / Chrome Web Store), not by this project.
-Define: private/incognito mode permission policy (requires explicit
-"allow in private windows" per browser), centralized version control
-via browser enterprise policies (partially in place for DoH lockdown),
+HashiCorp. **Update:** Chrome extensions were removed entirely due to
+Manifest V2 deprecation (Chrome 139+ removed MV2 support; see issue
+issue 32). VaultPass and uBlock Origin are now Firefox-only. Updates are
+handled by Firefox's extension auto-update mechanism (AMO), not by this
+project. Define: private/incognito mode permission policy (requires
+explicit "allow in private windows"), centralized version control via
+Firefox enterprise policies (partially in place for DoH lockdown),
 extension supply-chain risk assessment (compromised update could
 exfiltrate Vault tokens), and compatibility testing process for new
 extension versions against the deployed Vault version.
@@ -1047,14 +1187,23 @@ The Nginx re-encryption architecture is now fully implemented: browsers
 present their TLS client certificate to Nginx, which validates it and
 forwards the URL-encoded cert to Vault via `X-Client-Cert` /
 `x_forwarded_for_client_cert_header`. Cert auth works end-to-end
-through `https://vault.local` in both Firefox and Chrome. VaultPass
-token acquisition uses "Get Token from Vault Tab" (content-script
-based) as the primary method — requires a Vault UI tab to be open and
-authenticated. VaultPass's "Login via Web" button remains broken on
-Firefox due to a third-party extension bug (`importScripts is not
-defined` in `background.js:2` — Chrome Manifest V3 API not available
-in Firefox's Manifest V2 background scripts). This is not a project
-infrastructure issue. See [OPERATIONS.md](OPERATIONS.md) for the
+through `https://vault.local` in both Firefox and Chrome.
+**Update:** Auto-cert-select is now implemented in both browsers —
+Firefox via `security.default_personal_cert = "Select Automatically"`
+(locked enterprise policy) and Chrome via `AutoSelectCertificateForUrls`
+with issuer filter `O=Local Lab Infrastructure` (see issue #31).
+VaultPass credential display is now working: the popup Keys tab displays
+matched credentials with copy/fill buttons, and "Add Key" / "Save Key"
+work end-to-end. The Vault policy was renamed from `vaultpass-readonly`
+to `vaultpass` with full CRUD capabilities (create, read, update,
+delete) including `auth/token/revoke-self` for VaultPass logout.
+VaultPass token acquisition uses "Get Token from Vault Tab"
+(content-script based) as the primary method — requires a Vault UI tab
+to be open and authenticated. VaultPass's "Login via Web" button remains
+broken on Firefox due to a third-party extension bug (`importScripts is
+not defined` in `background.js:2` — Chrome Manifest V3 API not
+available in Firefox's Manifest V2 background scripts). This is not a
+project infrastructure issue. See [OPERATIONS.md](OPERATIONS.md) for the
 complete browser login procedure.
 
 **Priority 10 — Unrestricted DoT port 853 firewall rule:**

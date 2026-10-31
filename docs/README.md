@@ -5,12 +5,12 @@ ansible-workstation-firstboot project.
 
 ## Contents
 
-| Document                           | Description                                                                                       |
-|------------------------------------|---------------------------------------------------------------------------------------------------|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Service responsibilities, config ownership boundaries, and playbook phase ordering                |
-| [KNOWN_ISSUES.md](KNOWN_ISSUES.md) | Troubleshooting knowledge base -- symptoms, root causes, validated fixes, and future work backlog |
-| [OPERATIONS.md](OPERATIONS.md)     | Operational runbooks -- bastion enrollment, SSH CA key rotation                                   |
-| [decisions/](decisions/)           | Architectural Decision Records (ADRs) in MADR format                                              |
+| Document                           | Description                                                                                                                                     |
+|------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Service responsibilities, config ownership boundaries, and playbook phase ordering                                                              |
+| [KNOWN_ISSUES.md](KNOWN_ISSUES.md) | Troubleshooting knowledge base -- symptoms, root causes, validated fixes, and future work backlog                                               |
+| [OPERATIONS.md](OPERATIONS.md)     | Operational runbooks -- bastion enrollment, SSH CA key rotation, VaultPass setup, browser cert auto-select, AIDE re-baseline, P-384 CA rotation |
+| [decisions/](decisions/)           | Architectural Decision Records (ADRs) in MADR format                                                                                            |
 
 ## Architectural Decision Records
 

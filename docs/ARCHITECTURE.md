@@ -207,13 +207,18 @@ Intermediate CA (ECDSA P-384, CNSA 2.0 compliant), 3 distinct PKI
 roles, AppRole authentication, Vault Agent for automated cert rotation,
 production TLS certificate swap, TLS client certificate authentication
 with OIDC provider integration (`cert_auth.yml`), KV secret seeding
-with readonly policy (`vaultpass.yml`), browser trust store
+with CRUD policy (`vaultpass.yml`), browser trust store
 configuration (Root CA + VaultPass extension), and secrets backup to
 KV.
 
 Custom SELinux policy (`vault_t`) with `gen_tunable` booleans for
 optional network access (see
-[ADR-0002](decisions/ADR-0002-vault-selinux-policy.md)).
+[ADR-0002](decisions/ADR-0002-vault-selinux-policy.md)). As of v1.4.0,
+`vault.te` also grants `devlog_t:unix_dgram_socket sendto` to enable
+the syslog audit backend (Vault needs to send log entries to
+`/dev/log`). The vault role additionally deploys `logrotate-vault.te`
+(in `tls_production.yml`), which allows `logrotate_t` to access
+`vault_log_t` files for audit log rotation.
 
 #### PKI Roles
 
@@ -310,6 +315,12 @@ post\_task nsswitch workaround with integrated handling. Responsibilities:
 | `usbguard-gdm.te`    | —       | `sock_file` write + `unix_stream_socket` connectto for GDM             |
 | `browser-tpm2.te`    | v1.1.0  | TPM2 device access extended to `sysadm_t` for Chrome/Firefox PKCS#11   |
 
+> **Note:** The vault role deploys two additional SELinux modules from
+> `roles/vault/files/selinux/`: `vault.te` (custom `vault_t` domain,
+> see above) and `logrotate-vault.te` (allows `logrotate_t` to access
+> `vault_log_t` files for audit log rotation, deployed in
+> `tls_production.yml`).
+
 Includes a forward-compatibility placeholder for FIDO2/U2F
 (`auth_pam_u2f_enabled: false`).
 
@@ -353,10 +364,17 @@ not individual certificate renewal.
 
 ### Browser enterprise policies
 
-Chrome enterprise policies (DoH lockdown + VaultPass / uBlock Origin /
-incognito enforcement) are entirely owned by the **dns** role
-(`roles/dns/tasks/configure.yml`). The Firefox equivalent (VaultPass +
-uBlock Origin) is owned by the **vault** role's `browser_trust.yml`.
+Chrome enterprise policies are owned by the **dns** role
+(`roles/dns/tasks/configure.yml`) and are limited to: managed
+bookmarks (URLs default to `?with=cert` for TLS cert auth), DNS
+security (DoH disabled), and `AutoSelectCertificateForUrls` for
+automatic client certificate selection. Chrome **no longer carries
+extension policies** — uBlock Origin and VaultPass are MV2-only and
+Chrome 139+ removed MV2 support entirely. Firefox owns **all**
+extension policies (uBlock Origin + VaultPass) via the **vault**
+role's `browser_trust.yml`, which also sets
+`security.default_personal_cert = "Select Automatically"` to suppress
+client certificate prompts for VaultPass extension fetch calls.
 
 ## OpenSSH Privilege Separation on Fedora 44
 
@@ -454,7 +472,7 @@ architecture for traffic reaching Vault through `https://vault.local`:
 | 2     | TLS + identity        | `ssl_verify_client optional` with CA chain validation, CRL checking (`ssl_crl`), ECDSA-only cipher suite, session tickets off |
 | 3     | HTTP security         | HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, CSP report-only, `server_tokens off`      |
 | 4     | Proxy trust           | `X-Client-Cert` header sanitization (clear then set from `$ssl_client_escaped_cert`), `X-Real-IP` from `$remote_addr`         |
-| 5     | Vault authorization   | `auth/cert/login` via forwarded cert, ACL policies (`vaultpass`), token TTLs (1h idle / 24h max)                              |
+| 5     | Vault authorization   | `auth/cert/login` via forwarded cert, ACL policies (`vaultpass` — CRUD), token TTLs (1h idle / 24h max)                       |
 | 6     | Operational assurance | Per-vhost `vault_mtls` log format with cert fingerprint/DN/serial, CRL hourly refresh timer, `nginx -t` before every reload   |
 
 Rate limiting applies at Layer 3: auth endpoints at `5r/s`, API

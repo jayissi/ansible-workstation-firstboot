@@ -44,6 +44,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   format with cert fingerprint, DN, serial, and verify status
 - `nginx -t` validation before every Nginx reload (prevents config
   errors from taking Nginx down)
+- Firefox auto-select client cert policy
+  (`security.default_personal_cert = "Select Automatically"`, locked)
+  in enterprise policy — eliminates cert dialog that blocked VaultPass
+  fetch calls
+- Chrome auto-select client cert (`AutoSelectCertificateForUrls` with
+  issuer filter `O=Local Lab Infrastructure`) via managed policy
+- Managed bookmark URLs updated to default TLS cert auth via
+  `?with=cert` query parameter (both browsers)
+- `auth/token/revoke-self` capability added to vaultpass policy
+  (enables clean VaultPass logout)
+- `logrotate-vault.te` SELinux module allowing `logrotate_t` to
+  access `vault_log_t` files for audit log rotation
+- CRL bootstrap replaced `get_url` with `validate_certs: false` with
+  `ansible.builtin.uri` using `ca_path` for proper TLS validation
+  against private CA; URL changed to `vault.local:8200` to match
+  cert SAN
+- `devlog_t:unix_dgram_socket sendto` rule added to `vault.te` v1.4.0
+  enabling Vault syslog audit backend under SELinux confinement
+- `vault-syslog` SELinux fix integrated into main `vault.te`
+  (v1.4.0): `devlog_t` type in require block, `write` permission on
+  self `unix_dgram_socket`, `sendto` to
+  `devlog_t:unix_dgram_socket`
 
 ### Fixed
 
@@ -64,6 +86,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Vault bookmark URL changed from `:8200` to `https://vault.local`
   (cert auth now works through Nginx re-encryption proxy in both
   Firefox and Chrome)
+- VaultPass credential display: Firefox cert dialog prompted twice
+  (page context vs extension `moz-extension://` origin), blocking
+  VaultPass fetch calls with
+  `NetworkError when attempting to fetch resource`. Fixed with
+  `security.default_personal_cert = "Select Automatically"` Firefox
+  enterprise policy
+- Vault syslog audit backend: `vault_t` SELinux domain had zero
+  `unix_dgram_socket` permissions for `devlog_t` target — journal
+  socket write failed silently (no AVC audit record emitted when zero
+  rules exist for an object class, confirmed via `sesearch` policy
+  analysis and `semodule -DB` dontaudit removal). Fixed in `vault.te`
+  v1.4.0. Ref: hashicorp/vault#31670 (same failure class, AppArmor
+  on Ubuntu)
+- Vault audit log rotation: SELinux `logrotate_t` domain blocked from
+  accessing `vault_log_t` files. Fixed with `logrotate-vault.te`
+  SELinux module + logrotate `copytruncate` + `su vault vault`
+  directive
 
 ### Changed
 
@@ -77,6 +116,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Makefile refactored with venv guards, path variables, and explicit
   activation. Containerfile slimmed with `--setopt=install_weak_deps=False`,
   `--no-cache-dir`, and `LABEL` metadata
+- VaultPass policy renamed from `vaultpass-readonly` to `vaultpass`
+  with full CRUD capabilities (`create, read, update, delete` on
+  `secret/data/vaultPass/*`)
+- Removed all Chrome extension policies (uBlock Origin and VaultPass
+  are MV2-only; Chrome 139+ fully removed Manifest V2 support)
+- uBlock Origin unpinned from Firefox navbar (runs in background, not
+  force-pinned)
+- Vault SELinux policy bumped to v1.4.0
+- Logrotate vault-audit config uses `copytruncate` instead of
+  `create` (avoids SELinux label issues on rotated files)
 
 ## [0.2.0] - 2026-10-30
 

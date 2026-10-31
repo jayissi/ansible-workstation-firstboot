@@ -288,7 +288,8 @@ modutil -add "TPM2 PKCS#11" \
   -force
 
 # Firefox NSS database (profile path varies)
-FIREFOX_PROFILE=$(find ~/.mozilla/firefox -maxdepth 1 -name '*.default-release' -type d)
+# On Fedora 44+, profiles are at ~/.config/mozilla/firefox/ not ~/.mozilla/firefox/
+FIREFOX_PROFILE=$(find ~/.config/mozilla/firefox ~/.mozilla/firefox -maxdepth 1 -name '*.default-release' -type d 2>/dev/null | head -1)
 modutil -add "TPM2 PKCS#11" \
   -libfile /usr/lib64/pkcs11/libtpm2_pkcs11.so \
   -dbdir sql:"$FIREFOX_PROFILE" \
@@ -313,45 +314,56 @@ curl --cert /path/to/client-cert.pem \
 ## VaultPass Setup and First Use
 
 VaultPass is a browser extension for retrieving secrets from Vault's
-KV store, authenticated via OIDC through the local Vault instance.
+KV store, authenticated via TLS client certificate through the local
+Vault instance.
 
 ### Prerequisites
 
 - Vault is running, unsealed, and accessible at `https://vault.local`
 - The `vaultpass.yml` task has seeded the KV store and created the
   `vaultpass` policy
-- `cert_auth.yml` has configured the OIDC provider
+- `cert_auth.yml` has configured the TLS certificate auth method
 - Browser trust store includes the Vault Root CA
+- Client certificate is enrolled in the browser's PKCS#11 store (see
+  TPM2 Client Certificate Enrollment above)
 
 ### Browser Configuration
 
-Both Chrome and Firefox enforce a **private-browsing-only** policy for
-VaultPass via enterprise managed policies. This prevents secrets from
-being cached in normal browsing sessions.
+Both Chrome and Firefox are configured to allow VaultPass in regular
+and private browsing mode (`private_browsing: true` enables the
+extension in private windows — it does not restrict it to private
+mode only). Enterprise managed policies deploy auto-certificate-selection
+so TLS client auth completes without user prompts:
 
-### First-Use OIDC Login Flow
+- **Firefox:** `security.default_personal_cert = "Select Automatically"`
+- **Chrome:** `AutoSelectCertificateForUrls` policy
 
-1. Open the VaultPass extension in the browser
-2. Set the Vault address to `https://vault.local`
-3. Select **OIDC** as the authentication method
-4. Click **Login** — the browser opens the OIDC authorization endpoint
-   at `https://vault.local`
-5. Complete authentication (TLS client certificate or password)
-6. VaultPass receives a short-lived token
-   (`vault_vaultpass_token_ttl`, default 1h) scoped to the
-   `vaultpass` policy
-7. Secrets are available from the `secret/vaultPass` KV path
+### First-Use Token Acquisition
+
+1. Open Firefox or Chrome and navigate to
+   `https://vault.local/ui/vault/auth?with=cert` (deployed as a
+   managed bookmark)
+2. The browser automatically selects the client certificate during the
+   TLS handshake (no user prompt)
+3. The **TLS Certificates** method is preselected by the `?with=cert`
+   parameter — click **Sign in**
+4. The Vault dashboard appears with an authenticated session
+5. Open the VaultPass extension popup → **Options** tab → click
+   **Get Token from Vault Tab**
+6. VaultPass reads the token from the authenticated Vault UI tab and
+   stores it for KV secret retrieval from `secret/vaultPass/*`
 
 ### Token Lifecycle
 
-| Parameter | Default | Purpose                                  |
-|-----------|---------|------------------------------------------|
-| `ttl`     | 1h      | Token expires after 1 hour of inactivity |
-| `max_ttl` | 24h     | Absolute token lifetime ceiling          |
+| Parameter   | Value       | Purpose                                                                                                          |
+|-------------|-------------|------------------------------------------------------------------------------------------------------------------|
+| `token_ttl` | 72h         | Token lifetime (`vault_vaultpass_token_ttl`: 259200s)                                                            |
+| `max_ttl`   | 7 days      | Absolute token lifetime ceiling (604800s)                                                                        |
+| Policy      | `vaultpass` | CRUD access to `secret/data/vaultPass/*` (create, read, update, delete) plus `auth/token/revoke-self` for logout |
 
-Re-authentication is required after the token expires. The readonly
-policy restricts access to `secret/data/vaultPass/*` (read + list
-only).
+Re-authentication is required after the token expires or is revoked.
+The `vaultpass` policy grants CRUD access to `secret/data/vaultPass/*`
+and `secret/metadata/vaultPass/*` (list).
 
 ---
 
@@ -365,28 +377,35 @@ VaultPass token.
 
 #### Step 1 — Navigate to Vault
 
-Open Firefox or Chrome and navigate to `https://vault.local`.
+Open Firefox or Chrome and navigate to
+`https://vault.local/ui/vault/auth?with=cert`. This URL is deployed
+as a managed bookmark and preselects the **TLS Certificates** auth
+method.
 
-#### Step 2 — Select client certificate
+#### Step 2 — Automatic client certificate selection
 
-The browser prompts for a client certificate (triggered by Nginx's
-`ssl_verify_client optional` during the TLS handshake). Select
-**jayissi - VaultPass** and click **OK**.
+The browser automatically selects the **jayissi - VaultPass** client
+certificate during the TLS handshake (triggered by Nginx's
+`ssl_verify_client optional`). No user prompt appears:
 
-> **Note:** If no certificate prompt appears, the client cert may not
-> be enrolled in the browser's NSS database. See the TPM2 Client
+- **Firefox:** `security.default_personal_cert = "Select Automatically"`
+  (enterprise policy)
+- **Chrome:** `AutoSelectCertificateForUrls` (managed policy)
+
+> **Note:** If certificate auto-selection fails, verify the client
+> cert is enrolled in the browser's NSS database. See the TPM2 Client
 > Certificate Enrollment section above.
 
-#### Step 3 — Log in with TLS Certificates
+#### Step 3 — Sign in with TLS Certificates
 
-The Vault UI login page loads. Select **TLS Certificates** from the
-**Method** dropdown. Leave **Role name** and **Mount path** blank
-(defaults are correct). Click **Sign in**.
+The Vault UI login page loads with **TLS Certificates** preselected
+by the `?with=cert` URL parameter. Leave **Role name** and **Mount
+path** blank (defaults are correct). Click **Sign in**.
 
 #### Step 4 — Verify authentication
 
 The Vault dashboard appears. A token has been issued with the
-`vaultpass` policy (72h TTL, 1h idle timeout).
+`vaultpass` policy (72h TTL).
 
 #### Step 5 — Acquire token in VaultPass extension
 
@@ -408,12 +427,11 @@ a content script and stores it for KV secret retrieval from
   not available in Firefox's Manifest V2 background scripts. The
   "Login via Web" button fails with `importScripts is not defined`.
   This is a third-party extension bug, not a project infrastructure
-  issue. Use **Get Token from Vault Tab** as the workaround.
-- **Certificate prompt on every new connection:** `ssl_verify_client
-  optional` triggers a `CertificateRequest` during TLS handshake
-  (connection establishment), not at the HTTP level. Firefox offers a
-  "Remember this decision" dropdown to suppress re-prompting within
-  a session. This is expected browser TLS behavior.
+  issue. Note: credential display and **Get Token from Vault Tab**
+  work correctly — the earlier NetworkError from cert dialog prompts
+  (not `importScripts`) was the real blocker for credential display,
+  and that is now resolved by auto-cert-select. Use **Get Token from
+  Vault Tab** as the primary authentication method.
 
 ---
 
