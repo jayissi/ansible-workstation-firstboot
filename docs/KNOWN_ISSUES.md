@@ -1245,3 +1245,124 @@ are more approachable than direct Jinja2 templates. Pin version in
 `collections/requirements.yml` when adopting. Custom Vault integration
 (cert forwarding, CRL, backend mTLS, SELinux) stays project-owned
 regardless.
+
+**Priority 14 — Migrate `.local` to `.internal` namespace:**
+RFC 6762 reserves `.local` for multicast DNS (Avahi/Bonjour). The
+current `vault.local` and `status.vault.local` hostnames conflict with
+this reservation. The nsswitch `hosts:` line has
+`mdns_minimal [NOTFOUND=return]` which can terminate resolution before
+Unbound is consulted for `.local` names — the `/etc/hosts` entry masks
+this but it is fragile. Migrate to `vault.internal` /
+`status.vault.internal` using the `.internal` TLD (ICANN special-use
+reservation for private networks). Touches: `dns_local_data`,
+`dns_local_data_ptr`, `dns_private_domains`, `/etc/hosts` entry,
+`vault_local_hostname`, Nginx `server_name`, TLS certificate SANs
+(all 3 PKI roles), managed bookmark URLs, VaultPass KV URL patterns,
+`proxy_ssl_name`, Vault `api_addr`, and documentation. Remove the
+`local-zone: "local." nodefault` workaround in `unbound.conf.j2` after
+migration. Identified by two independent architecture reviews.
+
+**Priority 15 — Remove Google DNS from upstream resolvers:**
+Google Public DNS (`8.8.8.8`, `8.8.4.4`) provides no malware/phishing
+filtering, unlike Quad9 and Cloudflare malware-filter variants. Unbound
+does not use a strict primary→fallback ordering — it can select any
+configured forwarder based on availability and RTT. A query falling
+through to Google silently bypasses the threat-filtering policy enforced
+by Quad9 and Cloudflare. Remove Google; retain 4 Quad9 endpoints
+(primary, threat intelligence) + 2 Cloudflare malware-filter endpoints
+(secondary, equivalent policy). Both apply threat filtering, so
+failover does not weaken the security posture.
+
+**Priority 16 — Restrict DoT port 853 firewall rule to approved upstreams:**
+The current rich rule `port port="853" protocol="tcp" accept` allows
+any process to establish DoT connections to any external server.
+Restrict to the specific upstream DoT resolver IPs (Quad9 and
+Cloudflare) to prevent rogue applications from exfiltrating DNS queries
+via unauthorized DoT tunnels. Supersedes Priority 10 (which flagged the
+missing source filter; this item adds the destination filter).
+
+**Priority 17 — DNSSEC operational verification test:**
+Add a DNSSEC validation test to `roles/verification/tasks/network.yml`:
+`dig @127.0.0.1 dnssec-failed.org` must return SERVFAIL (not a
+successful resolution). dnsconfd's upstream README notes that "DNSSEC
+validation is turned off to prevent potential problems" — the project's
+`zz-module-override.conf` overrides this with
+`module-config: "respip validator iterator"`, but runtime verification
+is needed to confirm validation is actually active, not merely
+configured.
+
+**Priority 18 — DNS security regression test suite:**
+Create a dedicated `dns-security-test.yml` playbook or extend the
+verification role with automated DNS security assertions. Tests should
+cover: normal resolution, DNSSEC valid domain, DNSSEC broken domain
+(SERVFAIL), RPZ-blocked domain (NXDOMAIN), internal hostname resolution,
+DoT certificate verification, primary upstream unavailable (approved
+secondary used), both upstreams unavailable (no insecure fallback),
+dnsconfd restart recovery, browser DoH policy enforcement, and
+unauthorized outbound port 53 (blocked). Identified by both
+architecture reviews as a gap.
+
+**Priority 19 — Disable QNAME minimisation in forwarder mode:**
+`qname-minimisation: yes` is enabled in `unbound.conf.j2` but Unbound
+operates as a forwarder (all external queries go to dnsconfd-managed
+DoT upstreams via forward zones). QNAME minimisation only reduces label
+exposure during recursive delegation walks (root → TLD → authoritative);
+in forwarding mode the upstream resolver receives the full FQDN
+regardless. The on-path segment is already DoT-encrypted. The practical
+effect is extra round-trips per cold query with zero privacy benefit
+against the party that actually sees the query. Set
+`dns_qname_minimisation: false` in defaults. Identified by third
+architecture review.
+
+**Priority 20 — DoT strict mode total outage on restricted networks:**
+When TCP port 853 is blocked by the local network (hotel, corporate
+guest VLAN, captive portal), all eight DoT upstream forwarders fail
+identically. There is no cleartext fallback — DNS fails closed entirely.
+This is the correct security posture on trusted networks, but on
+restricted networks it takes the entire workstation offline with no
+diagnostic signal. Add a NetworkManager dispatcher or dnsconfd health
+probe that detects 853 blockage before locking the configuration. On
+failure, fall back to a named plaintext upstream with an explicit audit
+log entry so the operator knows degradation occurred. The security
+property that matters is knowing when you have degraded; total blackout
+without notification is not a security win.
+
+**Priority 21 — Change nsswitch `[NOTFOUND=return]` to `[NOTFOUND=continue]`:**
+The nsswitch `hosts:` line
+(`files mdns_minimal [NOTFOUND=return] myhostname dns`) terminates
+resolution at `mdns_minimal` when Avahi returns NOTFOUND for a `.local`
+query. This prevents Unbound from ever seeing `.local` names that only
+exist in its `local-data` directives. The `/etc/hosts` entry masks this
+for `vault.local`, but any future `.local` service added only to
+Unbound would be silently unreachable. Change to `[NOTFOUND=continue]`
+in `auth_nsswitch_hosts` so `.local` misses from Avahi fall through to
+the `dns` module. The performance cost of falling through on mDNS
+misses is negligible. This fix is independently valuable even after
+the `.local` → `.internal` migration (Priority 14).
+
+**Priority 22 — Keep minimal local-zone blocklist alongside RPZ:**
+RPZ and the legacy blocklist timer are mutually exclusive
+(`dns_rpz_enabled` disables the blocklist timer). If the RPZ zone
+becomes corrupt, the fetch fails on boot before a cached zone exists,
+or the `zonefile` is truncated, Unbound may load an empty policy —
+leaving the workstation unprotected with no secondary blocklist active.
+Keep a minimal high-confidence malware `local-zone` blocklist (even
+just a few hundred entries) active at all times via `conf.d/` drop-in,
+independent of RPZ state. The overlap is harmless; the loss of blocking
+when RPZ fails is not.
+
+**Priority 23 — systemd sandboxing for DNS services:**
+Add systemd sandboxing directives to `dnsconfd.service` and
+`unbound.service`: `ProtectSystem=strict`, `PrivateTmp=yes`,
+`MemoryDenyWriteExecute=yes`, and `IPAddressDeny=any` /
+`IPAddressAllow=localhost` for dnsconfd (which only communicates with
+Unbound via `unbound-control` on the loopback). SELinux provides
+mandatory access control but is coarse-grained and can break on Fedora
+major-version upgrades when policy interfaces change. systemd
+sandboxing is finer-grained, upgrade-safe, and constrains the daemon's
+blast radius independently of the SELinux policy modules. The secureblue
+project (a Fedora derivative focused on hardening) uses this approach
+for its dnsconfd integration. Requires careful testing for SELinux
+interaction — the Vault syslog audit debugging in this session
+demonstrated that `PrivateDevices=yes` can cause unexpected failures
+when combined with custom SELinux domains.

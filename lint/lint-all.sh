@@ -112,9 +112,12 @@ fi
 # container filesystem is ephemeral.
 # ---------------------------------------------------------------------------
 _log "Auto-fix (best-effort)"
-ruff check --fix . 2>/dev/null && _pass "ruff --fix" || true
-markdown-table-formatter "${DOCS[@]}" 2>/dev/null &&
-	_pass "markdown-table-formatter" || true
+if ruff check --fix . 2>/dev/null; then
+	_pass "ruff --fix"
+fi
+if markdown-table-formatter "${DOCS[@]}" 2>/dev/null; then
+	_pass "markdown-table-formatter"
+fi
 
 # ---------------------------------------------------------------------------
 # Verify phase (all linters, order: fast / broad → slow / narrow)
