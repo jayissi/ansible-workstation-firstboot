@@ -252,6 +252,7 @@
     - vault.te
     - vault.fc
     - vault.if
+    - logrotate-vault.te
   notify: Compile and install Vault SELinux policy
 
 # Port labeling (semanage port -a vault_cluster_port_t 8201) is now inside

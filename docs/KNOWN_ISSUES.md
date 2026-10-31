@@ -703,21 +703,30 @@ handshake, browsers never prompt for a cert, and Vault's `auth/cert/login`
 endpoint always fails. Additionally, VaultPass's `background.js`
 crashes on Firefox with `importScripts is not defined` (a Chrome
 Manifest V3 API not available in Firefox's Manifest V2 background
-scripts), breaking the "Login via Web" button entirely -- this is a
+scripts), breaking the "Login via Web" button entirely — this is a
 third-party extension bug, not a project infrastructure issue.
 
 **Fix:**
 
+- Implemented the Nginx re-encryption architecture: browsers present
+  their TLS client certificate to Nginx (`ssl_verify_client optional`),
+  Nginx validates it against the CA chain and CRL, then forwards the
+  URL-encoded certificate to Vault via the `X-Client-Cert` header
+  (`proxy_set_header X-Client-Cert $ssl_client_escaped_cert`). Vault
+  reads the forwarded certificate through its
+  `x_forwarded_for_client_cert_header` listener parameter, enabling
+  `auth/cert/login` to authenticate the client without requiring a
+  direct TLS connection to Vault. This allows cert auth to work through
+  `https://vault.local` (Nginx proxy) in both Firefox and Chrome.
 - Added `tls_client_ca_file` to Vault's listener template
-  (`vault.hcl.j2`) pointing to the Root CA. This tells Vault to send a
-  `CertificateRequest` listing the Root CA as trusted. Browsers then
-  prompt the user to select a matching client certificate.
+  (`vault.hcl.j2`) pointing to the Root CA so Vault sends a
+  `CertificateRequest` listing the Root CA as trusted.
   `tls_require_and_verify_client_cert` is deliberately not set (defaults
   to `false`) so the Vault UI loads without a cert; cert auth only
   activates on explicit login.
-- Added `ssl_verify_client optional` and `ssl_client_certificate` to the
-  Nginx reverse proxy vhost (`vault-proxy.conf.j2`). Same rationale:
-  `optional` requests a cert but does not require one.
+- Header sanitization in `vault-proxy.conf.j2`: Nginx clears any
+  incoming `X-Client-Cert` header from the client before setting it
+  from the validated TLS handshake result, preventing header injection.
 - Added managed bookmarks ("Vault" and "Vault Status") to both Firefox
   and Chrome via enterprise policies. Bookmark bar forced visible via
   `DisplayBookmarksToolbar: "always"` (Firefox) and
@@ -735,7 +744,8 @@ third-party extension bug, not a project infrastructure issue.
 
 **Validation:** `make lint` passes. Deploy to VM, verify Vault UI loads
 at `https://vault.local`, TLS Certificates login prompts for client
-cert in both Firefox and Chrome, bookmarks appear in bookmark bar,
+cert in both Firefox and Chrome, cert auth succeeds through the Nginx
+re-encryption proxy, bookmarks appear in bookmark bar,
 `https://status.vault.local` returns Vault health JSON.
 
 **Status:** Fixed.
@@ -1033,15 +1043,56 @@ automatic pretty-printing. Lower priority — Firefox already renders
 JSON natively, and Chrome's manual checkbox is functional.
 
 **Priority 9 — VaultPass TLS client certificate auth flow:**
-VaultPass's "Login via Web" button is broken on Firefox
-(`importScripts is not defined` in `background.js:2` — third-party
-extension bug, Chrome Manifest V3 API not available in Firefox's
-Manifest V2 background scripts). The Vault listener and Nginx now
-support mutual TLS (`tls_client_ca_file` and `ssl_verify_client
-optional`), so browser-based TLS cert auth works via the Vault UI
-directly. Remaining work: verify the complete VaultPass token
-acquisition flow end-to-end — Vault UI cert login, token copy, manual
-token paste into VaultPass, and KV read from `secret/vaultPass/*`.
-Evaluate whether the "Get Token from Vault Tab" VaultPass feature
-(content script based, not background script) works as an alternative
-to the broken "Login via Web" button.
+The Nginx re-encryption architecture is now fully implemented: browsers
+present their TLS client certificate to Nginx, which validates it and
+forwards the URL-encoded cert to Vault via `X-Client-Cert` /
+`x_forwarded_for_client_cert_header`. Cert auth works end-to-end
+through `https://vault.local` in both Firefox and Chrome. VaultPass
+token acquisition uses "Get Token from Vault Tab" (content-script
+based) as the primary method — requires a Vault UI tab to be open and
+authenticated. VaultPass's "Login via Web" button remains broken on
+Firefox due to a third-party extension bug (`importScripts is not
+defined` in `background.js:2` — Chrome Manifest V3 API not available
+in Firefox's Manifest V2 background scripts). This is not a project
+infrastructure issue. See [OPERATIONS.md](OPERATIONS.md) for the
+complete browser login procedure.
+
+**Priority 10 — Unrestricted DoT port 853 firewall rule:**
+The firewall rich rule `port port="853" protocol="tcp" accept` in
+`inventory/group_vars/all/main.yml` has no source address filter,
+unlike every other rich rule in the list. Unbound only acts as a DoT
+*client* (outbound to upstream resolvers), so an unrestricted *inbound*
+allow on port 853 is unexpected and should be reviewed in a future
+firewall hardening pass. Not related to the Nginx/Vault mTLS plan;
+flag separately.
+
+**Priority 11 — Logrotate verification for new Nginx log files:**
+Phase 3 of the Nginx mTLS plan added per-vhost access logs
+(`vault-mtls-access.log`, `ssh-gateway-access.log`) under
+`/var/log/nginx/`. Fedora's stock `nginx` RPM ships a default
+`/etc/logrotate.d/nginx` that globs `/var/log/nginx/*.log`, which
+should automatically cover the new files. Verify on the VM
+(`cat /etc/logrotate.d/nginx` and `logrotate -d /etc/logrotate.d/nginx`)
+that the glob matches. If it does not glob, add an explicit logrotate
+stanza to the proxy role.
+
+**Priority 12 — DNS local-data TTL:**
+`local-data` entries in `roles/dns/templates/local-zones.conf.j2` for
+`vault.local` and `status.vault.local` rely on Unbound's default TTL
+rather than an explicit value. Low priority since the IP (`127.0.0.1`)
+never changes, but worth adding an explicit TTL for clarity if this
+template is touched again.
+
+**Priority 13 — Evaluate `nginxinc.nginx_core` collection for Nginx
+configuration management:**
+The official NGINX Ansible collection (`nginxinc.nginx_config`) provides
+variable-driven configuration management for TLS, vhosts, upstreams,
+rate limiting, and HTTP/2. Not needed today — the project's 4-template,
+1-snippet architecture is simpler and more auditable for a
+single-workstation deployment — but becomes valuable if the project
+scales to multi-host deployments, LAN-facing Nginx exposure
+(Priority 3), or team-operated environments where variable interfaces
+are more approachable than direct Jinja2 templates. Pin version in
+`collections/requirements.yml` when adopting. Custom Vault integration
+(cert forwarding, CRL, backend mTLS, SELinux) stays project-owned
+regardless.

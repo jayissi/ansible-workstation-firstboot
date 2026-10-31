@@ -6,6 +6,33 @@
     state: absent
   notify: Reload nginx
 
+- name: Configure | Deploy HTTP-level hardening configuration
+  ansible.builtin.template:
+    src: 00-hardening.conf.j2
+    dest: '{{ __proxy_conf_d_dir }}/00-hardening.conf'
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload nginx
+
+- name: Configure | Deploy security headers snippet
+  ansible.builtin.template:
+    src: security-headers.inc.j2
+    dest: '{{ __proxy_conf_d_dir }}/security-headers.inc'
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload nginx
+
+- name: Configure | Deploy default-deny catch-all server block
+  ansible.builtin.template:
+    src: default-deny.conf.j2
+    dest: '{{ __proxy_conf_d_dir }}/default-deny.conf'
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload nginx
+
 - name: Configure | Deploy Vault reverse proxy configuration
   ansible.builtin.template:
     src: vault-proxy.conf.j2
@@ -69,7 +96,6 @@
     owner: root
     group: root
     mode: "0444"
-  when: __proxy_leaf_cert is not skipped and __proxy_leaf_cert.json is defined
 
 - name: Configure | Build client CA chain (Intermediate + Root) for mutual TLS
   ansible.builtin.shell:
@@ -102,6 +128,65 @@
     group: root
     mode: '0644'
   notify: Reload nginx
+
+# ---------------------------------------------------------------------------
+# CRL automation -- fetch and deploy Vault PKI CRL for client cert revocation
+# ---------------------------------------------------------------------------
+- name: Configure | Deploy CRL update script
+  ansible.builtin.copy:
+    src: bin/nginx-crl-update
+    dest: /usr/local/bin/nginx-crl-update
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Configure | Check if CRL file exists
+  ansible.builtin.stat:
+    path: /etc/nginx/certs/client-ca.crl
+  register: __proxy_crl_check
+
+- name: Configure | Bootstrap CRL from Vault PKI (first run only)
+  ansible.builtin.uri:
+    url: https://vault.local:8200/v1/pki_int/crl/pem
+    method: GET
+    ca_path: /etc/nginx/certs/root.crt
+    return_content: true
+    status_code: 200
+  register: __proxy_crl_content
+  when: not __proxy_crl_check.stat.exists
+
+- name: Configure | Deploy bootstrapped CRL
+  ansible.builtin.copy:
+    content: "{{ __proxy_crl_content.content }}"
+    dest: /etc/nginx/certs/client-ca.crl
+    owner: root
+    group: root
+    mode: '0444'
+  when: __proxy_crl_content is not skipped
+
+- name: Configure | Deploy CRL update systemd service
+  ansible.builtin.template:
+    src: nginx-crl-update.service.j2
+    dest: /etc/systemd/system/nginx-crl-update.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload proxy systemd units
+
+- name: Configure | Deploy CRL update systemd timer
+  ansible.builtin.template:
+    src: nginx-crl-update.timer.j2
+    dest: /etc/systemd/system/nginx-crl-update.timer
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload proxy systemd units
+
+- name: Configure | Enable and start CRL update timer
+  ansible.builtin.systemd_service:
+    name: nginx-crl-update.timer
+    enabled: true
+    state: started
 
 # ---------------------------------------------------------------------------
 # SSH credential gateway -- narrow bastion-facing vhost for OTP / CA creds

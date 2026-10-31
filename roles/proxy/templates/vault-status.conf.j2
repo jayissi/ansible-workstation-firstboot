@@ -9,6 +9,8 @@ server {
     ssl_certificate_key {{ proxy_tls_key }};
     ssl_protocols       {{ proxy_tls_protocols }};
 
+    include {{ __proxy_conf_d_dir }}/security-headers.inc;
+
     location = / {
         proxy_pass {{ proxy_backend_url }}/v1/sys/health;
         proxy_ssl_verify on;

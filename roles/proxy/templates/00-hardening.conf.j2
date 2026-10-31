@@ -1,0 +1,37 @@
+# {{ ansible_managed }}
+# HTTP-level security hardening (included in http {} context by Fedora's nginx.conf)
+
+server_tokens off;
+
+# TLS cipher suite (ECDSA-only, matches project's P-384 PKI)
+ssl_ciphers 'ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256';
+ssl_prefer_server_ciphers on;
+ssl_ecdh_curve secp384r1:X25519;
+
+# TLS session management
+ssl_session_timeout 1h;
+ssl_session_cache shared:SSL:10m;
+ssl_session_tickets off;
+
+# Request controls
+client_max_body_size 1m;
+
+# Rate limiting zones
+limit_req_zone $binary_remote_addr zone=vault_auth:10m rate=5r/s;
+limit_req_zone $binary_remote_addr zone=vault_api:10m rate=30r/s;
+limit_conn_zone $binary_remote_addr zone=per_ip:10m;
+
+# Disable response caching for all Vault API responses
+proxy_cache off;
+proxy_no_cache 1;
+proxy_cache_bypass 1;
+
+# Certificate fingerprint logging
+log_format vault_mtls
+    '$remote_addr - [$time_local] '
+    '"$request" $status $body_bytes_sent '
+    'cert_verify="$ssl_client_verify" '
+    'cert_dn="$ssl_client_s_dn" '
+    'cert_serial="$ssl_client_serial" '
+    'cert_fingerprint="$ssl_client_fingerprint" '
+    'upstream_time=$upstream_response_time';

@@ -3,13 +3,33 @@
 
 server {
     listen {{ proxy_listen_address }}:{{ proxy_listen_port }} ssl;
+    http2 on;
     server_name {{ proxy_server_name }};
 
-    ssl_certificate     {{ proxy_tls_cert }};
-    ssl_certificate_key {{ proxy_tls_key }};
-    ssl_protocols       {{ proxy_tls_protocols }};
+    ssl_certificate        {{ proxy_tls_cert }};
+    ssl_certificate_key    {{ proxy_tls_key }};
+    ssl_protocols          {{ proxy_tls_protocols }};
+    ssl_client_certificate {{ proxy_tls_client_ca }};
+    ssl_verify_client      optional;
+    ssl_verify_depth       3;
+    # ssl_crl requires CRLs for EVERY CA in the chain (Intermediate + Root).
+    # The bootstrap currently only fetches the Intermediate CA's CRL.
+    # Uncomment after adding Root CA CRL fetch to nginx-crl-update script.
+    # ssl_crl              /etc/nginx/certs/client-ca.crl;
 
-    location / {
+    include {{ __proxy_conf_d_dir }}/security-headers.inc;
+
+    access_log /var/log/nginx/vault-mtls-access.log vault_mtls;
+
+    limit_conn per_ip 20;
+
+    proxy_connect_timeout 5s;
+    proxy_send_timeout    10s;
+    proxy_read_timeout    30s;
+    send_timeout          10s;
+
+    location /v1/auth/ {
+        limit_req zone=vault_auth burst=10 nodelay;
         proxy_pass {{ proxy_backend_url }};
         proxy_ssl_verify on;
         proxy_ssl_trusted_certificate {{ proxy_tls_ca }};
@@ -17,7 +37,22 @@ server {
         proxy_ssl_name {{ proxy_server_name }};
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Client-Cert $ssl_client_escaped_cert;
+    }
+
+    location / {
+        limit_req zone=vault_api burst=50 nodelay;
+        proxy_pass {{ proxy_backend_url }};
+        proxy_ssl_verify on;
+        proxy_ssl_trusted_certificate {{ proxy_tls_ca }};
+        proxy_ssl_server_name on;
+        proxy_ssl_name {{ proxy_server_name }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Client-Cert $ssl_client_escaped_cert;
     }
 }

@@ -68,13 +68,14 @@
     dest: /etc/logrotate.d/vault-audit
     content: |
       {{ vault_log_dir }}/audit.log {
+          su {{ vault_user }} {{ vault_group }}
           daily
           rotate 30
           compress
           delaycompress
           missingok
           notifempty
-          create 0600 {{ vault_user }} {{ vault_group }}
+          copytruncate
       }
     owner: root
     group: root

@@ -1,0 +1,7 @@
+{{ ansible_managed | default('Ansible managed') | comment }}
+[Unit]
+Description=Fetch and deploy Vault PKI CRL for Nginx client cert revocation
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/nginx-crl-update

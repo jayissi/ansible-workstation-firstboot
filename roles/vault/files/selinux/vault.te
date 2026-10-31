@@ -1,4 +1,4 @@
-policy_module(vault, 1.3.0)
+policy_module(vault, 1.4.0)
 
 ########################################
 #
@@ -46,13 +46,14 @@ require {
 	type vault_sys_content_t;
 	type vault_log_t;
 	type kernel_t; # Needed for /dev/log
+	type devlog_t; # Journal socket (/run/systemd/journal/dev-log)
 	type unreserved_port_t;
 	type httpd_config_t; # Vault Agent writes proxy certs to /etc/nginx/certs/
 	type syslogd_var_run_t; # Vault writes to syslog socket (/dev/log)
 	type init_t; # systemd reads vault_conf_t for vault-cert-reload.path
 	class netlink_route_socket { bind create getattr nlmsg_read read write };
 	class tcp_socket { accept bind connect create getattr getopt listen setopt read write };
-	class unix_dgram_socket { bind create getattr setopt connect sendto };
+	class unix_dgram_socket { bind create getattr setopt connect sendto write };
 	class file { create getattr lock map open read write };
 	class dir { add_name create getattr open read write search };
 }
@@ -64,11 +65,12 @@ allow vault_t self:fifo_file rw_fifo_file_perms;
 allow vault_t self:unix_stream_socket create_stream_socket_perms;
 # and network sockets too
 allow vault_t self:netlink_route_socket { bind create getattr nlmsg_read };
-allow vault_t self:unix_dgram_socket { bind create getattr setopt connect sendto };
+allow vault_t self:unix_dgram_socket { bind create getattr setopt connect sendto write };
 allow vault_t self:tcp_socket { accept bind create getattr listen setopt read write };
 allow vault_t unreserved_port_t:tcp_socket name_connect;
-# Allow to write to /dev/log
+# Allow to write to /dev/log and journal socket
 allow vault_t kernel_t:unix_dgram_socket sendto;
+allow vault_t devlog_t:unix_dgram_socket sendto;
 # allow outbound network connectivity (for node to node comms)
 allow vault_t self:tcp_socket { connect getopt };
 

@@ -12,6 +12,9 @@ listener "tcp" {
   tls_key_file       = "{{ vault_tls_key_file }}"
   tls_client_ca_file = "{{ vault_tls_client_ca_file }}"
   tls_disable        = "false"
+  x_forwarded_for_authorized_addrs             = "127.0.0.1"
+  x_forwarded_for_client_cert_header           = "X-Client-Cert"
+  x_forwarded_for_client_cert_header_decoders  = "URL,DER"
 }
 
 api_addr     = "{{ vault_api_addr }}"

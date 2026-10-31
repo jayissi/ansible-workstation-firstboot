@@ -193,51 +193,29 @@
     group: root
     mode: '0644'
 
-- name: Configure | Remove legacy Chrome extension policy files (replaced by extension-settings.json)
+- name: Configure | Remove Chrome extension policy files (no MV3-compatible extensions available)
   ansible.builtin.file:
     path: "/etc/opt/chrome/policies/managed/{{ item }}"
     state: absent
   loop:
     - extensions.json
     - incognito-extensions.json
+    - extension-settings.json
 
-- name: Configure | Deploy Chrome extension settings policy (force-install + toolbar pin)
-  ansible.builtin.copy:
-    dest: /etc/opt/chrome/policies/managed/extension-settings.json
-    content: |
-      {
-        "ExtensionSettings": {
-          "cjpalhdlnbpafiamejdnhcphjbkeiagm": {
-            "installation_mode": "force_installed",
-            "update_url": "https://clients2.google.com/service/update2/crx",
-            "toolbar_pin": "force_pinned"
-          },
-          "kbndeonibamcpiibocdhlagccdlmefco": {
-            "installation_mode": "force_installed",
-            "update_url": "https://clients2.google.com/service/update2/crx",
-            "toolbar_pin": "force_pinned"
-          }
-        },
-        "MandatoryExtensionsForIncognitoNavigation": [
-          "cjpalhdlnbpafiamejdnhcphjbkeiagm",
-          "kbndeonibamcpiibocdhlagccdlmefco"
-        ]
-      }
-    owner: root
-    group: root
-    mode: '0644'
-
-- name: Configure | Deploy Chrome managed bookmarks policy
+- name: Configure | Deploy Chrome managed bookmarks and cert auto-select policy
   ansible.builtin.copy:
     dest: /etc/opt/chrome/policies/managed/bookmarks.json
     content: |
       {
         "ManagedBookmarks": [
           { "toplevel_name": "Managed" },
-          { "name": "Vault", "url": "https://vault.local:8200" },
+          { "name": "Vault", "url": "https://vault.local/ui/vault/auth?with=cert" },
           { "name": "Vault Status", "url": "https://status.vault.local" }
         ],
-        "BookmarkBarEnabled": true
+        "BookmarkBarEnabled": true,
+        "AutoSelectCertificateForUrls": [
+          "{\"pattern\":\"https://vault.local\",\"filter\":{\"ISSUER\":{\"O\":\"Local Lab Infrastructure\"}}}"
+        ]
       }
     owner: root
     group: root

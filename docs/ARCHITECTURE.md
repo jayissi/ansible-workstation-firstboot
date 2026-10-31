@@ -442,3 +442,22 @@ bind-mount (the host's own `.venv/` contains only `ansible-core`, not
 the lint toolchain). CI (`.github/workflows/lint.yml`) runs every tool
 directly in verify-only mode and never auto-fixes or mutates a PR
 branch.
+
+## Nginx Security Layers
+
+The Nginx reverse proxy implements a 6-layer defense-in-depth
+architecture for traffic reaching Vault through `https://vault.local`:
+
+| Layer | Name                  | Controls                                                                                                                      |
+|-------|-----------------------|-------------------------------------------------------------------------------------------------------------------------------|
+| 1     | Network perimeter     | Firewall `DROP` default policy; Vault bound to `127.0.0.1:8200` only; Nginx on `127.0.0.1:443`                                |
+| 2     | TLS + identity        | `ssl_verify_client optional` with CA chain validation, CRL checking (`ssl_crl`), ECDSA-only cipher suite, session tickets off |
+| 3     | HTTP security         | HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, CSP report-only, `server_tokens off`      |
+| 4     | Proxy trust           | `X-Client-Cert` header sanitization (clear then set from `$ssl_client_escaped_cert`), `X-Real-IP` from `$remote_addr`         |
+| 5     | Vault authorization   | `auth/cert/login` via forwarded cert, ACL policies (`vaultpass`), token TTLs (1h idle / 24h max)                              |
+| 6     | Operational assurance | Per-vhost `vault_mtls` log format with cert fingerprint/DN/serial, CRL hourly refresh timer, `nginx -t` before every reload   |
+
+Rate limiting applies at Layer 3: auth endpoints at `5r/s`, API
+endpoints at `30r/s`, connection limit of `20/IP`. The default-deny
+catch-all vhost returns `444` (connection closed) for any request
+with an unrecognized `Host` header.

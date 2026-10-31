@@ -8,7 +8,26 @@
     name: '{{ __proxy_service_name }}'
     state: restarted
 
-- name: Reload nginx
+- name: Validate nginx configuration
+  ansible.builtin.command:
+    cmd: nginx -t
+  register: __proxy_nginx_config_test
+  changed_when: false
+  failed_when: false
+  listen: Reload nginx
+
+- name: Reload nginx (config validated)
   ansible.builtin.systemd_service:
     name: '{{ __proxy_service_name }}'
     state: reloaded
+  when: __proxy_nginx_config_test.rc == 0
+  listen: Reload nginx
+
+- name: Fail if nginx config is invalid
+  ansible.builtin.fail:
+    msg: >-
+      Nginx configuration test failed:
+      {{ __proxy_nginx_config_test.stderr | default('unknown error') }}.
+      Config NOT reloaded.
+  when: __proxy_nginx_config_test.rc is defined and __proxy_nginx_config_test.rc != 0
+  listen: Reload nginx

@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- yamllint `brackets`/`braces: forbid: non-empty` -- enforces
+- yamllint `brackets`/`braces: forbid: non-empty` — enforces
   block-style YAML sequences and mappings everywhere (Red Hat Ansible
   best practice), while still allowing bare `[]`/`{}` for empty
   collections since block-style has no syntax for an empty sequence
@@ -20,6 +20,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `toolbar_pin: "force_pinned"` (Chrome)
 - `status.vault.local` DNS record and Nginx vhost proxying to
   Vault's `/v1/sys/health` endpoint for quick health checks
+- Nginx re-encryption architecture with
+  `x_forwarded_for_client_cert_header` for browser-based TLS client
+  certificate authentication through the reverse proxy — Nginx
+  validates the client cert, forwards it URL-encoded via
+  `$ssl_client_escaped_cert`, and Vault reads it from the
+  `X-Client-Cert` header for `auth/cert/login`
+- HTTP security headers shared snippet (`security-headers.conf`):
+  HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy,
+  Permissions-Policy, CSP in report-only mode, X-Robots-Tag noindex
+- TLS cipher hardening (`nginx-hardening.conf`): ECDSA-only cipher
+  suite (`ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256`),
+  `ssl_ecdh_curve secp384r1:X25519`, `ssl_session_tickets off`,
+  `server_tokens off`
+- Rate limiting on Vault auth (`5r/s`) and API (`30r/s`) endpoints,
+  connection limits (`20/IP`), request timeouts
+- Default-deny catch-all vhost (`default-deny.conf`) returning 444
+  for unknown Host headers
+- CRL lifecycle automation: hourly systemd timer fetches CRL from
+  Vault PKI, validates with `openssl crl`, atomic deploy to
+  `/etc/nginx/certs/client-ca.crl`, `nginx -t` guard before reload
+- Certificate fingerprint access logging: per-vhost `vault_mtls` log
+  format with cert fingerprint, DN, serial, and verify status
+- `nginx -t` validation before every Nginx reload (prevents config
+  errors from taking Nginx down)
 
 ### Fixed
 
@@ -37,6 +61,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Vault listener and `ssl_verify_client optional` to Nginx reverse
   proxy so browsers prompt for the TPM2-bound client certificate when
   using the Vault UI "TLS Certificates" login method
+- Vault bookmark URL changed from `:8200` to `https://vault.local`
+  (cert auth now works through Nginx re-encryption proxy in both
+  Firefox and Chrome)
 
 ### Changed
 

@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CRL_URL="https://127.0.0.1:8200/v1/pki_int/crl/pem"
+CACERT="/etc/vault.d/certs/root.crt"
+CRL_TMP="/etc/nginx/certs/client-ca.crl.new"
+CRL_ACTIVE="/etc/nginx/certs/client-ca.crl"
+
+log() { printf '[%s] %s\n' "$(date -Iseconds)" "$*"; }
+
+log "Fetching CRL from Vault PKI..."
+curl --cacert "${CACERT}" -sf "${CRL_URL}" -o "${CRL_TMP}" || {
+	log "ERROR: Failed to fetch CRL from ${CRL_URL}"
+	rm -f "${CRL_TMP}"
+	exit 1
+}
+
+log "Validating CRL..."
+openssl crl -in "${CRL_TMP}" -noout || {
+	log "ERROR: CRL validation failed"
+	rm -f "${CRL_TMP}"
+	exit 1
+}
+
+log "Deploying CRL..."
+chmod 0444 "${CRL_TMP}"
+mv -f "${CRL_TMP}" "${CRL_ACTIVE}"
+
+log "Validating nginx configuration..."
+nginx -t 2>/dev/null || {
+	log "ERROR: nginx -t failed after CRL update"
+	exit 1
+}
+
+systemctl reload nginx
+logger -p auth.info "nginx-crl-update: CRL updated and nginx reloaded"
+log "CRL update complete."

@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+# Catch-all for unknown Host headers — close connection silently
+
+server {
+    listen {{ proxy_listen_address }}:{{ proxy_listen_port }} ssl default_server;
+    server_name _;
+
+    ssl_certificate     {{ proxy_tls_cert }};
+    ssl_certificate_key {{ proxy_tls_key }};
+    ssl_protocols       {{ proxy_tls_protocols }};
+
+    return 444;
+}

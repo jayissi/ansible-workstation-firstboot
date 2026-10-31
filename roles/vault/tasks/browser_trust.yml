@@ -42,6 +42,15 @@
           "Certificates": {
             "ImportEnterpriseRoots": true
           },
+          "SecurityDevices": {
+            "Add": {}
+          },
+          "Preferences": {
+            "security.default_personal_cert": {
+              "Value": "Select Automatically",
+              "Status": "locked"
+            }
+          },
           "DNSOverHTTPS": {
             "Enabled": false,
             "Locked": true
@@ -49,15 +58,14 @@
           "DisplayBookmarksToolbar": "always",
           "ManagedBookmarks": [
             { "toplevel_name": "Managed" },
-            { "name": "Vault", "url": "https://vault.local:8200" },
+            { "name": "Vault", "url": "https://vault.local/ui/vault/auth?with=cert" },
             { "name": "Vault Status", "url": "https://status.vault.local" }
           ],
           "ExtensionSettings": {
             "uBlock0@raymondhill.net": {
               "installation_mode": "force_installed",
               "install_url": "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi",
-              "private_browsing": true,
-              "default_area": "navbar"
+              "private_browsing": true
             },
             "addon@blum.coffee": {
               "installation_mode": "force_installed",

@@ -74,7 +74,7 @@ vault_ssh_ca_max_ttl: "72h"
 # VaultPass browser extension
 vault_vaultpass_enabled: true
 vault_vaultpass_kv_path: "secret/vaultPass"
-vault_vaultpass_policy_name: "vaultpass-readonly"
+vault_vaultpass_policy_name: "vaultpass"
 vault_vaultpass_token_ttl: "1h"
 vault_vaultpass_token_max_ttl: "24h"
 

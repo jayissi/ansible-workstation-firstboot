@@ -319,7 +319,7 @@ KV store, authenticated via OIDC through the local Vault instance.
 
 - Vault is running, unsealed, and accessible at `https://vault.local`
 - The `vaultpass.yml` task has seeded the KV store and created the
-  `vaultpass-readonly` policy
+  `vaultpass` policy
 - `cert_auth.yml` has configured the OIDC provider
 - Browser trust store includes the Vault Root CA
 
@@ -339,7 +339,7 @@ being cached in normal browsing sessions.
 5. Complete authentication (TLS client certificate or password)
 6. VaultPass receives a short-lived token
    (`vault_vaultpass_token_ttl`, default 1h) scoped to the
-   `vaultpass-readonly` policy
+   `vaultpass` policy
 7. Secrets are available from the `secret/vaultPass` KV path
 
 ### Token Lifecycle
@@ -352,6 +352,68 @@ being cached in normal browsing sessions.
 Re-authentication is required after the token expires. The readonly
 policy restricts access to `secret/data/vaultPass/*` (read + list
 only).
+
+---
+
+## VaultPass Browser Login
+
+Step-by-step procedure for authenticating to Vault via TLS client
+certificate through the Nginx re-encryption proxy and acquiring a
+VaultPass token.
+
+### Procedure
+
+#### Step 1 — Navigate to Vault
+
+Open Firefox or Chrome and navigate to `https://vault.local`.
+
+#### Step 2 — Select client certificate
+
+The browser prompts for a client certificate (triggered by Nginx's
+`ssl_verify_client optional` during the TLS handshake). Select
+**jayissi - VaultPass** and click **OK**.
+
+> **Note:** If no certificate prompt appears, the client cert may not
+> be enrolled in the browser's NSS database. See the TPM2 Client
+> Certificate Enrollment section above.
+
+#### Step 3 — Log in with TLS Certificates
+
+The Vault UI login page loads. Select **TLS Certificates** from the
+**Method** dropdown. Leave **Role name** and **Mount path** blank
+(defaults are correct). Click **Sign in**.
+
+#### Step 4 — Verify authentication
+
+The Vault dashboard appears. A token has been issued with the
+`vaultpass` policy (72h TTL, 1h idle timeout).
+
+#### Step 5 — Acquire token in VaultPass extension
+
+To use the token with the VaultPass browser extension:
+
+1. Keep the Vault UI tab open and authenticated
+2. Open the VaultPass extension popup
+3. Go to the **Options** tab
+4. Click **Get Token from Vault Tab**
+
+VaultPass reads the token from the authenticated Vault UI tab via
+a content script and stores it for KV secret retrieval from
+`secret/vaultPass/*`.
+
+### Known Issues
+
+- **VaultPass "Login via Web" broken on Firefox:** VaultPass's
+  `background.js` calls `importScripts`, a Chrome Manifest V3 API
+  not available in Firefox's Manifest V2 background scripts. The
+  "Login via Web" button fails with `importScripts is not defined`.
+  This is a third-party extension bug, not a project infrastructure
+  issue. Use **Get Token from Vault Tab** as the workaround.
+- **Certificate prompt on every new connection:** `ssl_verify_client
+  optional` triggers a `CertificateRequest` during TLS handshake
+  (connection establishment), not at the HTTP level. Firefox offers a
+  "Remember this decision" dropdown to suppress re-prompting within
+  a session. This is expected browser TLS behavior.
 
 ---
 

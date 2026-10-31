@@ -1,0 +1,15 @@
+module logrotate-vault 1.0;
+
+require {
+    type logrotate_t;
+    type vault_log_t;
+    class dir { getattr open read search };
+    class file { create getattr open read rename unlink write };
+}
+
+# Allow logrotate to rotate Vault audit log files that carry the
+# vault_log_t SELinux label.  Without this policy, logrotate running
+# under the logrotate_t domain cannot stat or manipulate files in
+# /var/log/vault, causing logrotate.service to fail.
+allow logrotate_t vault_log_t:dir { getattr open read search };
+allow logrotate_t vault_log_t:file { create getattr open read rename unlink write };

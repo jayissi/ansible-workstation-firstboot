@@ -902,6 +902,7 @@ fapolicyd_add_trusted_paths:
   - /usr/local/bin/vault-agent-split-proxy-cert
   - /usr/local/bin/vault-enroll-client-cert
   - /usr/local/bin/vault-agent-split-client-cert
+  - /usr/local/bin/nginx-crl-update
 
 # ---------------------------------------------------------------------------
 # linux_system_roles.aide (Phase 3 -- MUST be LAST)

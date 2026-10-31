@@ -18,7 +18,7 @@
       - 200
       - 204
 
-- name: Vaultpass | Create vaultpass-readonly policy
+- name: Vaultpass | Create vaultpass policy
   ansible.builtin.uri:
     url: "{{ vault_addr }}/v1/sys/policies/acl/{{ vault_vaultpass_policy_name }}"
     method: PUT
@@ -28,7 +28,7 @@
     body:
       policy: |
         path "secret/data/vaultPass/*" {
-          capabilities = ["read"]
+          capabilities = ["create", "read", "update", "delete"]
         }
         path "secret/metadata/vaultPass/*" {
           capabilities = ["list"]
@@ -37,6 +37,9 @@
           capabilities = ["read"]
         }
         path "auth/token/renew-self" {
+          capabilities = ["update"]
+        }
+        path "auth/token/revoke-self" {
           capabilities = ["update"]
         }
     validate_certs: false
