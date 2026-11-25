@@ -259,17 +259,34 @@
     # watched directories are created by roles that run AFTER auditd
     # (e.g. /etc/vault-ssh-helper.d by the auth role in Tier 2), so on a
     # freshly installed host the auditd role (Tier 1) failed. Confirmed
-    # on a reinstalled VM 2026-11-24. Pre-create any missing watched
-    # directory; no mode/owner is passed, so existing directories keep
-    # their permissions and the owning role still sets its own.
-    - name: Ensure audit-watched directories exist before auditd loads rules
-      ansible.builtin.file:
+    # on a reinstalled VM 2026-11-24. Pre-create ONLY the watched
+    # directories that are missing (0755 root:root, matching the auth
+    # role's /etc/vault-ssh-helper.d); existing directories such as
+    # /etc/sudoers.d (0750) are never touched, so their permissions are
+    # preserved and the owning role still manages them.
+    - name: Check audit-watched directories before auditd loads rules
+      ansible.builtin.stat:
         path: "{{ item }}"
-        state: directory
       loop: >-
         {{ auditd_rules | default([])
            | selectattr('dir', 'defined')
            | map(attribute='dir') | unique | list }}
+      register: __audit_watch_dirs
+      tags:
+        - auditd
+        - harden
+
+    - name: Create missing audit-watched directories
+      ansible.builtin.file:
+        path: "{{ item.item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop: "{{ __audit_watch_dirs.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: not item.stat.exists
       tags:
         - auditd
         - harden
