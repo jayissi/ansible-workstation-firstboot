@@ -12,10 +12,7 @@ server {
     ssl_client_certificate {{ proxy_tls_client_ca }};
     ssl_verify_client      optional;
     ssl_verify_depth       3;
-    # ssl_crl requires CRLs for EVERY CA in the chain (Intermediate + Root).
-    # The bootstrap currently only fetches the Intermediate CA's CRL.
-    # Uncomment after adding Root CA CRL fetch to nginx-crl-update script.
-    # ssl_crl              /etc/nginx/certs/client-ca.crl;
+    ssl_crl              /etc/nginx/certs/client-ca.crl;
 
     include {{ __proxy_conf_d_dir }}/security-headers.inc;
 
@@ -33,6 +30,8 @@ server {
         proxy_pass {{ proxy_backend_url }};
         proxy_ssl_verify on;
         proxy_ssl_trusted_certificate {{ proxy_tls_ca }};
+        proxy_ssl_certificate {{ proxy_tls_proxy_client_cert }};
+        proxy_ssl_certificate_key {{ proxy_tls_proxy_client_key }};
         proxy_ssl_server_name on;
         proxy_ssl_name {{ proxy_server_name }};
         proxy_set_header Host $host;
@@ -47,6 +46,8 @@ server {
         proxy_pass {{ proxy_backend_url }};
         proxy_ssl_verify on;
         proxy_ssl_trusted_certificate {{ proxy_tls_ca }};
+        proxy_ssl_certificate {{ proxy_tls_proxy_client_cert }};
+        proxy_ssl_certificate_key {{ proxy_tls_proxy_client_key }};
         proxy_ssl_server_name on;
         proxy_ssl_name {{ proxy_server_name }};
         proxy_set_header Host $host;

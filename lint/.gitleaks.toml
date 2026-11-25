@@ -7,8 +7,9 @@ title = "ansible-workstation-firstboot gitleaks config"
 [allowlist]
   description = "Known non-secret placeholders and expected patterns"
 
-  # The vault_admin_passphrase placeholder in inventory/group_vars/all/vault.yml
-  # is a documented default that admins MUST change and ansible-vault encrypt
+  # The vault_admin_passphrase placeholder in
+  # inventory/group_vars/all/vault.yml.example (template for vault.yml) is a
+  # documented default that admins MUST change and ansible-vault encrypt
   # before production use. It is not a real secret.
   regexTarget = "line"
   paths = [

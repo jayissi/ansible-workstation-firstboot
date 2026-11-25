@@ -900,6 +900,7 @@ fapolicyd_add_trusted_paths:
   - /usr/bin/vault
   - /usr/bin/vault-ssh-helper
   - /usr/local/bin/vault-agent-split-proxy-cert
+  - /usr/local/bin/vault-agent-split-proxy-client-cert
   - /usr/local/bin/vault-enroll-client-cert
   - /usr/local/bin/vault-agent-split-client-cert
   - /usr/local/bin/nginx-crl-update

@@ -53,6 +53,10 @@ repos:
         args:
           - --baseline
           - lint/.secrets.baseline
+        # Never scan the baseline itself: its hashed_secret values look
+        # like new secrets, so every run appended self-referencing entries
+        # and rewrote the file, aborting the commit in a loop.
+        exclude: ^lint/\.secrets\.baseline$
 
   - repo: https://github.com/rhysd/actionlint
     rev: v1.7.12

@@ -96,7 +96,7 @@ galaxy: ## Re-download Galaxy roles and collections only
 # =============================================================================
 # Deployment and operations (requires venv)
 # =============================================================================
-.PHONY: test deploy verify vault-rotate-root-token
+.PHONY: test deploy verify vault-rotate-root-token security-test
 
 test: ## Syntax-check the playbook (dry run)
 	$(call require_venv)
@@ -115,3 +115,6 @@ vault-rotate-root-token: ## Rotate the Vault root token (on-demand)
 	$(call require_venv)
 	$(ACTIVATE) && ansible-playbook $(PLAYBOOK) \
 		--tags vault-rotate-token -e vault_rotate_root_token=true
+
+security-test: ## Run security regression tests on the target VM
+	ssh -F .ssh_config test 'sudo bash -s' < tests/security-test.sh

@@ -42,6 +42,17 @@ template {
   command     = "/usr/local/bin/vault-agent-split-proxy-cert"
 }
 
+# Proxy client certificate for backend mTLS. Nginx presents this cert
+# to the dedicated Vault listener on port {{ vault_proxy_listener_port }}
+# (tls_require_and_verify_client_cert = true). Same single-pkiCert
+# pattern: one issue call, split into cert + key by the command hook.
+template {
+  source      = "{{ vault_config_dir }}/templates/proxy-client-combined.tpl"
+  destination = "{{ vault_agent_run_dir }}/proxy-client-combined.tmp"
+  perms       = 0400
+  command     = "/usr/local/bin/vault-agent-split-proxy-client-cert"
+}
+
 {% if vault_cert_auth_enabled | default(false) | bool %}
 # Client authentication certificate (identity-bearing, 72h TTL).
 # Uses the same single-pkiCert pattern: one issue call, split into

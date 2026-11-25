@@ -2,6 +2,13 @@
 # roles/vault/tasks/init.yml
 # Initialize Vault, unseal, age-encrypt unseal keys, bind to TPM2
 
+# Run pending handlers (daemon-reload, SELinux module, Restart vault)
+# now that the project vault.hcl and unit file are in place, so Vault
+# is (re)started with the project config rather than any config that
+# was on disk earlier (e.g. the HashiCorp RPM default vault.hcl).
+- name: Init | Apply pending Vault config/unit changes before start
+  ansible.builtin.meta: flush_handlers
+
 - name: Init | Enable and start Vault service
   ansible.builtin.systemd:
     name: vault

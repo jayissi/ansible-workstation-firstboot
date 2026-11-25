@@ -1,0 +1,26 @@
+---
+# =============================================================================
+# EXAMPLE Ansible Vault variables -- template for vault.yml
+# =============================================================================
+# This file is a SAFE-TO-COMMIT template. It contains the same keys as the
+# real, encrypted inventory/group_vars/all/vault.yml, with placeholder values.
+# Ansible does NOT load this file (".example" is not a vars-file extension).
+#
+# Setup for a new deployment:
+#   1. cp inventory/group_vars/all/vault.yml.example \
+#         inventory/group_vars/all/vault.yml
+#   2. Replace every placeholder value below with your own.
+#   3. ansible-vault encrypt inventory/group_vars/all/vault.yml
+#      (password file: .vault_pass.txt, see ansible.cfg vault_password_file)
+#   4. Edit later with: ansible-vault edit inventory/group_vars/all/vault.yml
+#
+# vault.yml is gitignored -- never commit it decrypted.
+# =============================================================================
+
+# Passphrase for disaster recovery root token backup.
+# Used to create /root/.vault-root-token.age.pass on the target.
+# Admin can decrypt the root token with:
+#   age -d /root/.vault-root-token.age.pass   (prompts for this passphrase)
+# Generate a strong value, e.g.:  openssl rand -base64 32
+# Leave empty ("") to skip creating the passphrase-protected backup.
+vault_admin_passphrase: "changeme-encrypt-this-file-with-ansible-vault"

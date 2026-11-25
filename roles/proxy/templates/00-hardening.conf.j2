@@ -20,6 +20,7 @@ client_max_body_size 1m;
 limit_req_zone $binary_remote_addr zone=vault_auth:10m rate=5r/s;
 limit_req_zone $binary_remote_addr zone=vault_api:10m rate=30r/s;
 limit_conn_zone $binary_remote_addr zone=per_ip:10m;
+limit_req_status 429;
 
 # Disable response caching for all Vault API responses
 proxy_cache off;

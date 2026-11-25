@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Split Vault Agent's combined proxy client cert+key render into the
+# separate files Nginx requires for backend mTLS. Pure file I/O -- no
+# service management. Nginx reload is handled by the systemd
+# nginx-cert-reload.path unit which watches the cert file for changes
+# (PathModified).
+
+set -euo pipefail
+
+COMBINED="{{ vault_agent_run_dir }}/proxy-client-combined.tmp"
+CERT_OUT="{{ vault_proxy_cert_dir }}/proxy-client.crt"
+KEY_OUT="{{ vault_proxy_cert_dir }}/proxy-client.key"
+
+[ -f "${COMBINED}" ] || { echo "No combined proxy client render found" >&2; exit 1; }
+
+awk '/-----BEGIN VAULT-AGENT-PROXY-CLIENT-CERT-----/{f=1;next} /-----BEGIN VAULT-AGENT-PROXY-CLIENT-KEY-----/{f=0;next} f' \
+  "${COMBINED}" > "${CERT_OUT}.new"
+awk '/-----BEGIN VAULT-AGENT-PROXY-CLIENT-KEY-----/{f=1;next} f' \
+  "${COMBINED}" > "${KEY_OUT}.new"
+
+chmod 0444 "${CERT_OUT}.new"
+chmod 0400 "${KEY_OUT}.new"
+mv -f "${CERT_OUT}.new" "${CERT_OUT}"
+mv -f "${KEY_OUT}.new" "${KEY_OUT}"

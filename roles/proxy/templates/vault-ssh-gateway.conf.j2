@@ -22,6 +22,8 @@ server {
         proxy_pass {{ proxy_backend_url }};
         proxy_ssl_verify on;
         proxy_ssl_trusted_certificate {{ proxy_tls_ca }};
+        proxy_ssl_certificate {{ proxy_tls_proxy_client_cert }};
+        proxy_ssl_certificate_key {{ proxy_tls_proxy_client_key }};
         proxy_ssl_server_name on;
         # Without this, nginx validates Vault's cert against the literal
         # proxy_backend_url host (127.0.0.1), which isn't a SAN on Vault's
@@ -36,6 +38,8 @@ server {
         proxy_pass {{ proxy_backend_url }};
         proxy_ssl_verify on;
         proxy_ssl_trusted_certificate {{ proxy_tls_ca }};
+        proxy_ssl_certificate {{ proxy_tls_proxy_client_cert }};
+        proxy_ssl_certificate_key {{ proxy_tls_proxy_client_key }};
         proxy_ssl_server_name on;
         proxy_ssl_name {{ proxy_server_name }};
         proxy_set_header X-Vault-Token $http_x_vault_token;

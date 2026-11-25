@@ -26,6 +26,14 @@
     group: "{{ vault_group }}"
     mode: "0640"
 
+- name: Agent | Deploy Vault Agent proxy client certificate template
+  ansible.builtin.template:
+    src: vault-agent-proxy-client-combined.tpl.j2
+    dest: "{{ vault_config_dir }}/templates/proxy-client-combined.tpl"
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: "0640"
+
 - name: Agent | Deploy cert/key split script
   ansible.builtin.template:
     src: vault-agent-split-cert.sh.j2
@@ -38,6 +46,14 @@
   ansible.builtin.template:
     src: vault-agent-split-proxy-cert.sh.j2
     dest: /usr/local/bin/vault-agent-split-proxy-cert
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Agent | Deploy proxy client cert/key split script
+  ansible.builtin.template:
+    src: vault-agent-split-proxy-client-cert.sh.j2
+    dest: /usr/local/bin/vault-agent-split-proxy-client-cert
     owner: root
     group: root
     mode: "0755"
@@ -126,10 +142,24 @@
     - Reload systemd
     - Restart vault-agent
 
+# state: started is required here, not just enabled: true. "enabled"
+# only symlinks the unit into multi-user.target.wants for the NEXT
+# boot -- it does not start the service in the current session. On a
+# VM where vault-agent has run continuously since an earlier boot,
+# this was never noticed. On a truly fresh deploy, vault-agent never
+# starts in this run, so it never renders the proxy-client cert
+# template/split-script output, and Nginx's later "Service | Enable
+# and start Nginx" task fails: "cannot load certificate
+# /etc/nginx/certs/proxy-client.crt: ... No such file or directory"
+# (confirmed via runtime testing: service was "inactive (dead)" with
+# zero journal entries post-deploy; manually running
+# `systemctl start vault-agent` immediately rendered all cert
+# templates and created proxy-client.crt/.key).
 - name: Agent | Enable Vault Agent services
   ansible.builtin.systemd:
     name: "{{ item }}"
     enabled: true
+    state: started
     daemon_reload: true
   loop:
     - vault-agent-secret

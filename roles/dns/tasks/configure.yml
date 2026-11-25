@@ -96,6 +96,14 @@
 #     response-policy actions before answers leave the resolver.
 #   validator -- DNSSEC validation.
 #   iterator -- standard recursive resolution.
+#
+# DO NOT reorder to "validator respip iterator": Unbound 1.26.2 refuses to
+# start ("unbound-checkconf: fatal error: module conf 'validator respip
+# iterator' is not known to work"). Confirmed on testfedora 2026-11-24 --
+# it took local DNS down until reverted. Unbound modules form a stack:
+# the query descends the list and the answer ascends it in reverse, so
+# with "respip validator iterator" the validator sees (and SERVFAILs a
+# BOGUS) answer BEFORE respip can rewrite it. See KNOWN_ISSUES #7.
 - name: Configure | Override dnsconfd module-config for DNSSEC and RPZ
   ansible.builtin.copy:
     dest: /etc/unbound/conf.d/zz-module-override.conf
@@ -193,14 +201,36 @@
     group: root
     mode: '0644'
 
-- name: Configure | Remove Chrome extension policy files (no MV3-compatible extensions available)
+- name: Configure | Remove legacy Chrome extension policy files
   ansible.builtin.file:
     path: "/etc/opt/chrome/policies/managed/{{ item }}"
     state: absent
   loop:
     - extensions.json
     - incognito-extensions.json
-    - extension-settings.json
+
+- name: Configure | Deploy Chrome extension policy (VaultPass MV3 + incognito)
+  ansible.builtin.copy:
+    dest: /etc/opt/chrome/policies/managed/extension-settings.json
+    content: |
+      {
+        "ExtensionSettings": {
+          "*": {
+            "installation_mode": "allowed"
+          },
+          "kbndeonibamcpiibocdhlagccdlmefco": {
+            "installation_mode": "force_installed",
+            "update_url": "https://clients2.google.com/service/update2/crx",
+            "toolbar_pin": "force_pinned"
+          }
+        },
+        "MandatoryExtensionsForIncognitoNavigation": [
+          "kbndeonibamcpiibocdhlagccdlmefco"
+        ]
+      }
+    owner: root
+    group: root
+    mode: '0644'
 
 - name: Configure | Deploy Chrome managed bookmarks and cert auto-select policy
   ansible.builtin.copy:
@@ -214,7 +244,8 @@
         ],
         "BookmarkBarEnabled": true,
         "AutoSelectCertificateForUrls": [
-          "{\"pattern\":\"https://vault.local\",\"filter\":{\"ISSUER\":{\"O\":\"Local Lab Infrastructure\"}}}"
+          "{\"pattern\":\"https://vault.local\",\"filter\":{\"ISSUER\":{\"CN\":\"Local Lab Infrastructure Intermediate CA\"}}}",
+          "{\"pattern\":\"https://vault.local:8200\",\"filter\":{\"ISSUER\":{\"CN\":\"Local Lab Infrastructure Intermediate CA\"}}}"
         ]
       }
     owner: root

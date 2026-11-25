@@ -315,10 +315,16 @@
 # ------------------------------------------------------------------
 - name: Cert Auth | Find Firefox default profile path
   ansible.builtin.shell:
+    # On Fedora 44+, Firefox profiles moved to ~/.config/mozilla/firefox/
+    # -- ~/.mozilla/firefox/ is kept as a fallback for older Firefox or
+    # other distros. Confirmed via runtime testing: searching only the
+    # legacy path silently finds nothing on Fedora 44, so PKCS#11
+    # registration (and client cert enrollment) never happens for
+    # Firefox even after the profile is created.
     cmd: >-
       set -o pipefail;
-      find {{ common_admin_home }}/.mozilla/firefox -maxdepth 2
-      -name "cert9.db" -path "*.default*" 2>/dev/null
+      find {{ common_admin_home }}/.config/mozilla/firefox {{ common_admin_home }}/.mozilla/firefox
+      -maxdepth 2 -name "cert9.db" -path "*.default*" 2>/dev/null
       | head -1 | xargs dirname 2>/dev/null
   register: _vault_firefox_profile_path
   changed_when: false
@@ -354,3 +360,137 @@
       {{ 'TPM2 PKCS#11 module registered in Firefox NSS database.'
          if (_vault_firefox_profile_path.stdout | default('')) | trim | length > 0
          else 'INFO: Firefox profile not found. Run Firefox once, then re-run to register PKCS#11.' }}
+
+# ------------------------------------------------------------------
+# Import Vault Agent-issued client cert into browser NSS databases
+# ------------------------------------------------------------------
+# Vault Agent (via client-auth-combined.tpl + split script) auto-issues
+# a software-key client cert at {{ vault_cert_dir }}/client.crt/.key.
+# Browsers only offer certs present in their NSS database (cert9.db),
+# so the cert must be imported as a PKCS#12 bundle. Without this step,
+# browsers have no cert to present for TLS client auth — nginx's
+# ssl_verify_client (optional) lets the connection through without a
+# cert, and Vault's cert auth returns "client certificate must be
+# supplied". Confirmed via audit log: Chrome attempts with no cert
+# yielded that exact error, and one attempt with a stale TPM2-backed
+# cert from a pre-reprovision PKI yielded "failed to match all
+# constraints" (serial mismatch: cert from old CA vs new CA).
+
+# Chrome and Firefox hold file locks on cert9.db/key4.db while
+# running.  certutil -N and pk12util block waiting for the lock,
+# which looks like a hang.  Kill browser processes before touching
+# the NSS databases.  Confirmed via runtime testing: certutil -N
+# blocked for >5 minutes until the browser session was closed.
+- name: Cert Auth | Stop browsers that may lock NSS databases
+  ansible.builtin.command:
+    cmd: "pkill -u {{ common_admin_user }} -f {{ item }}"
+  loop:
+    - chrome
+    - firefox
+  failed_when: false
+  changed_when: false
+
+- name: Cert Auth | Wait for Vault Agent client cert to be rendered
+  ansible.builtin.wait_for:
+    path: "{{ vault_cert_dir }}/client.key"
+    state: present
+    timeout: 30
+  when: vault_root_token | default('') | length > 0
+
+# certutil -N / pk12util block if a browser (Chrome or Firefox) holds
+# an open file lock on cert9.db/key4.db during an active session.
+# Wiping the database files first avoids the lock entirely: the OS
+# keeps the old inode alive for the browser's open handle while
+# certutil creates fresh files at the same paths without contention.
+# On a fresh deploy the old database is either empty or contains
+# stale state (e.g. certs from a pre-reprovision PKI), so wiping is
+# the correct action anyway.  System CA trust (Root CA) is stored in
+# the system-wide trust store (/etc/pki/ca-trust/), not in this
+# per-user NSS database, so wiping is safe.
+- name: Cert Auth | Wipe stale Chrome NSS database (avoids TPM2 module hang)
+  ansible.builtin.file:
+    path: "{{ common_admin_home }}/.pki/nssdb/{{ item }}"
+    state: absent
+  loop:
+    - cert9.db
+    - key4.db
+    - pkcs11.txt
+    - pkcs11.txt.bak
+
+- name: Cert Auth | Create clean Chrome NSS database (empty password)
+  ansible.builtin.command:
+    cmd: >-
+      certutil -d sql:{{ common_admin_home }}/.pki/nssdb
+      -N --empty-password
+  register: _vault_nss_chrome_init
+  failed_when: false
+  changed_when: _vault_nss_chrome_init.rc == 0
+
+- name: Cert Auth | Create PKCS12 bundle from Vault Agent client cert
+  ansible.builtin.command:
+    cmd: >-
+      openssl pkcs12 -export
+      -in {{ vault_cert_dir }}/client.crt
+      -inkey {{ vault_cert_dir }}/client.key
+      -out /tmp/vault-client-cert.p12
+      -passout pass:
+      -name "VaultPass Client Cert"
+  changed_when: true
+
+- name: Cert Auth | Remove stale client cert from Chrome NSS (idempotent)
+  ansible.builtin.command:
+    cmd: >-
+      certutil -d sql:{{ common_admin_home }}/.pki/nssdb
+      -D -n "VaultPass Client Cert"
+  failed_when: false
+  changed_when: true
+
+- name: Cert Auth | Import client cert PKCS12 into Chrome NSS database
+  ansible.builtin.command:
+    cmd: >-
+      pk12util -d sql:{{ common_admin_home }}/.pki/nssdb
+      -i /tmp/vault-client-cert.p12 -W ""
+  register: _vault_nss_chrome_import
+  changed_when: "'IMPORT SUCCESSFUL' in _vault_nss_chrome_import.stdout"
+
+- name: Cert Auth | Fix Chrome NSS database ownership
+  ansible.builtin.file:
+    path: "{{ common_admin_home }}/.pki/nssdb"
+    state: directory
+    recurse: true
+    owner: "{{ common_admin_user }}"
+    group: "{{ common_admin_user }}"
+
+- name: Cert Auth | Import client cert PKCS12 into Firefox NSS database
+  when: (_vault_firefox_profile_path.stdout | default('')) | trim | length > 0
+  block:
+    - name: Cert Auth | Remove stale client cert from Firefox NSS (idempotent)
+      ansible.builtin.command:
+        cmd: >-
+          certutil -d sql:{{ _vault_firefox_profile_path.stdout | trim }}
+          -D -n "VaultPass Client Cert"
+      failed_when: false
+      changed_when: true
+
+    - name: Cert Auth | Import client cert PKCS12 into Firefox NSS
+      ansible.builtin.command:
+        cmd: >-
+          pk12util -d sql:{{ _vault_firefox_profile_path.stdout | trim }}
+          -i /tmp/vault-client-cert.p12 -W ""
+      register: _vault_nss_firefox_import
+      changed_when: "'IMPORT SUCCESSFUL' in _vault_nss_firefox_import.stdout"
+
+    - name: Cert Auth | Fix Firefox NSS cert database ownership
+      ansible.builtin.file:
+        path: "{{ _vault_firefox_profile_path.stdout | trim }}/{{ item }}"
+        owner: "{{ common_admin_user }}"
+        group: "{{ common_admin_user }}"
+      loop:
+        - cert9.db
+        - key4.db
+      failed_when: false
+
+- name: Cert Auth | Clean up temporary PKCS12 file
+  ansible.builtin.file:
+    path: /tmp/vault-client-cert.p12
+    state: absent

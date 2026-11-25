@@ -9,6 +9,16 @@
 #   - tpm2-tools, tpm2-pkcs11, tpm2-pkcs11-tools, opensc, p11-kit
 #   - Vault cert auth method enabled with client-auth PKI role
 #   - VAULT_ADDR and VAULT_TOKEN environment variables set
+#
+# IMPORTANT: run this via `sudo vault-enroll-client-cert` (TPM2 hardware
+# ops require root). Everything this script writes into the ADMIN's
+# home directory (tpm2-pkcs11 token store, Chrome/Firefox NSS
+# databases) is explicitly chown'd back to ADMIN_USER below -- without
+# that, certutil/tpm2_ptool create those files as root (the script's
+# effective UID), making them unreadable to the admin's own desktop
+# browser session. Confirmed via runtime testing: ~/.pki/nssdb/cert9.db
+# etc. were root:root after running this under sudo, so Chrome (running
+# as the admin) could not see the enrolled cert at all.
 
 set -euo pipefail
 
@@ -79,12 +89,18 @@ tpm2_evictcontrol \
 # Step 6: Register key with tpm2-pkcs11
 # ---------------------------------------------------------------
 log "Registering key with tpm2-pkcs11..."
+TPM2_STORE_DIR="${ADMIN_HOME}/.tpm2_pkcs11"
 if ! tpm2_ptool listprimaries 2>/dev/null | grep -q "client-auth"; then
-    tpm2_ptool init --path="${ADMIN_HOME}/.tpm2_pkcs11" 2>/dev/null || true
+    mkdir -p "${TPM2_STORE_DIR}"
+    # Non-fatal: init fails harmlessly on an existing store (re-enrollment);
+    # a real failure surfaces at CSR generation (Step 7).
+    tpm2_ptool init --path="${TPM2_STORE_DIR}" || \
+        log "WARN: tpm2_ptool init returned non-zero (store may already exist)."
     tpm2_ptool addtoken \
-        --path="${ADMIN_HOME}/.tpm2_pkcs11" \
+        --path="${TPM2_STORE_DIR}" \
         --label="client-auth" \
-        --sopin="sopin" --userpin="userpin" 2>/dev/null || true
+        --sopin="sopin" --userpin="userpin" || \
+        log "WARN: tpm2_ptool addtoken returned non-zero (token may already exist)."
 fi
 
 # ---------------------------------------------------------------
@@ -148,8 +164,10 @@ if [ -d "${ADMIN_HOME}/.pki/nssdb" ]; then
         log "WARN: Chrome NSS cert enrollment failed (non-fatal)."
 fi
 
-# Firefox NSS DB (find default profile)
-FF_PROFILE=$(find "${ADMIN_HOME}/.mozilla/firefox" -maxdepth 2 \
+# Firefox NSS DB (find default profile). On Fedora 44+, profiles moved
+# to ~/.config/mozilla/firefox/ -- ~/.mozilla/firefox/ is kept as a
+# fallback for older Firefox/other distros.
+FF_PROFILE=$(find "${ADMIN_HOME}/.config/mozilla/firefox" "${ADMIN_HOME}/.mozilla/firefox" -maxdepth 2 \
     -name "cert9.db" -path "*.default*" 2>/dev/null | head -1 | xargs dirname 2>/dev/null || true)
 if [ -n "${FF_PROFILE}" ]; then
     certutil -d "sql:${FF_PROFILE}" -A \
@@ -158,6 +176,24 @@ if [ -n "${FF_PROFILE}" ]; then
         -i "${CERT_DIR}/client.crt" 2>/dev/null || \
         log "WARN: Firefox NSS cert enrollment failed (non-fatal)."
 fi
+
+# ---------------------------------------------------------------
+# FIX: reclaim ownership of everything written into the admin's home
+# directory. This script runs as root (sudo, required for TPM2 ops),
+# so certutil/tpm2_ptool create new files owned by root even though
+# they live under ADMIN_HOME -- making them unreadable/unusable by
+# the admin's own (non-root) browser session. Confirmed root cause of
+# "Authentication failed: failed to match all constraints" on a fresh
+# enrollment: Chrome had no cert to offer because it could not open
+# ~/.pki/nssdb/cert9.db (owned by root).
+# ---------------------------------------------------------------
+log "Fixing ownership of admin-home artifacts (TPM2 store, NSS databases)..."
+[ -d "${TPM2_STORE_DIR}" ] && chown -R "${ADMIN_USER}:${ADMIN_USER}" "${TPM2_STORE_DIR}"
+[ -d "${ADMIN_HOME}/.pki/nssdb" ] && chown -R "${ADMIN_USER}:${ADMIN_USER}" "${ADMIN_HOME}/.pki/nssdb"
+if [ -n "${FF_PROFILE}" ]; then
+    chown "${ADMIN_USER}:${ADMIN_USER}" "${FF_PROFILE}"/cert9.db "${FF_PROFILE}"/key4.db "${FF_PROFILE}"/pkcs11.txt 2>/dev/null || true
+fi
+restorecon -Rv "${ADMIN_HOME}/.pki" "${TPM2_STORE_DIR}" ${FF_PROFILE:+"${FF_PROFILE}"} >/dev/null 2>&1 || true
 
 log "Client certificate enrollment complete."
 log "Certificate: ${CERT_DIR}/client.crt"

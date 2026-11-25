@@ -487,6 +487,193 @@ re-creation.
 
 ---
 
+## CRL Emergency Revocation Procedure
+
+When a client certificate is compromised and must be revoked
+immediately, force a CRL regeneration and deploy it to Nginx without
+waiting for the hourly systemd timer.
+
+### Background
+
+The CRL update script (`/usr/local/bin/nginx-crl-update`) fetches
+two CRLs from Vault — one from the Intermediate CA
+(`pki_int/crl/pem`) and one from the Root CA (`pki/crl/pem`). Both
+are concatenated into `/etc/nginx/certs/client-ca.crl` for Nginx's
+`ssl_crl` directive. The script validates each CRL with
+`openssl crl -verify`, checks `nextUpdate` staleness, backs up the
+current CRL before replacement, and rolls back on `nginx -t` failure.
+
+### Procedure
+
+#### Step 1 — Revoke the compromised certificate in Vault
+
+```bash
+# Find the certificate serial number
+vault list pki_int/certs
+
+# Revoke by serial number
+vault write pki_int/revoke serial_number=<serial>
+```
+
+#### Step 2 — Force CRL regeneration
+
+Vault automatically regenerates the CRL when a certificate is
+revoked. Verify the CRL was updated:
+
+```bash
+# Check the CRL last-update timestamp
+curl -s --resolve vault.local:8200:127.0.0.1 \
+  --cacert /etc/nginx/certs/root.crt \
+  https://vault.local:8200/v1/pki_int/crl/pem | \
+  openssl crl -noout -lastupdate -nextupdate
+```
+
+#### Step 3 — Deploy the updated CRL immediately
+
+```bash
+# Run the CRL update script manually (normally runs hourly via timer)
+sudo /usr/local/bin/nginx-crl-update
+```
+
+The script fetches both CRLs, validates them, backs up the current
+CRL, deploys the new concatenated CRL, runs `nginx -t`, and reloads
+Nginx. If `nginx -t` fails, the script automatically rolls back to
+the backup.
+
+#### Step 4 — Verify the revocation is active
+
+```bash
+# Attempt a TLS connection with the revoked certificate
+# This should fail with a CRL-based rejection
+curl -v --cert /path/to/revoked-cert.pem \
+     --key /path/to/revoked-key.pem \
+     --cacert /etc/pki/ca-trust/source/anchors/vault-root-ca.crt \
+     https://vault.local/v1/sys/health
+```
+
+The connection should be rejected by Nginx (HTTP 400 or TLS handshake
+failure) because the revoked serial appears in the deployed CRL.
+
+### Staleness Fail-Closed Behavior
+
+If the CRL fetch fails and the existing CRL's `nextUpdate` timestamp
+has passed, the script exits non-zero **without deploying** any CRL.
+This fail-closed behavior ensures that a stale CRL (which may not
+contain recent revocations) is never silently trusted. The systemd
+timer will retry on its next hourly cycle. Monitor via
+`journalctl -u nginx-crl-update`.
+
+---
+
+## Dual-Listener Topology (Vault Ports 8200 / 8202)
+
+Vault exposes two TCP listeners on the loopback interface with
+different trust requirements:
+
+| Port | Purpose                 | Client Cert  | Consumers                     |
+|------|-------------------------|--------------|-------------------------------|
+| 8200 | CLI / Agent / Admin API | Not required | `vault` CLI, Vault Agent, API |
+| 8202 | Nginx Reverse Proxy     | Required     | Nginx only                    |
+
+### Why Two Listeners
+
+Port 8202 enforces `tls_require_and_verify_client_cert = true`,
+meaning only clients presenting a valid certificate signed by the
+Intermediate CA can connect. This isolates the proxy-facing attack
+surface from the CLI/Agent interface. A process on the loopback that
+does not possess the `nginx-proxy-client` certificate cannot reach
+Vault through port 8202.
+
+Port 8202 was chosen because 8201 is reserved for Vault Raft cluster
+communications.
+
+### Operational Notes
+
+- Both listeners share the same server TLS certificate and
+  `x_forwarded_for_*` configuration
+- SELinux port label (`vault_cluster_port_t`) is applied to 8202 via
+  `semanage port`
+- Firewall rich rule restricts 8202 to loopback only
+- If Vault restarts, both listeners come up together — no separate
+  service management is needed
+- `proxy_backend_url` in `inventory/group_vars/all/main.yml` points
+  to `https://127.0.0.1:8202`
+
+### Troubleshooting
+
+```bash
+# Verify both listeners are active
+ss -tlnp | grep -E ':(8200|8202)'
+
+# Test port 8202 with the proxy client cert
+curl -s --cert /etc/nginx/certs/proxy-client.crt \
+     --key /etc/nginx/certs/proxy-client.key \
+     --cacert /etc/nginx/certs/root.crt \
+     https://127.0.0.1:8202/v1/sys/health
+
+# Test port 8202 WITHOUT a client cert (should fail)
+curl -s --cacert /etc/nginx/certs/root.crt \
+     https://127.0.0.1:8202/v1/sys/health
+# Expected: TLS handshake failure (client cert required)
+```
+
+---
+
+## Security Regression Test Suite
+
+The `make security-test` target runs an automated security regression
+test suite that validates Nginx and Vault security controls.
+
+### Usage
+
+```bash
+# Run the full security test suite
+make security-test
+```
+
+The test script requires the system to be fully deployed with Vault
+unsealed and Nginx running.
+
+### Test Coverage
+
+The suite includes both **negative assertions** (things that must
+fail) and **positive assertions** (things that must succeed):
+
+**Negative tests:**
+
+- Unknown `Host` header returns 444 (connection closed by
+  default-deny vhost)
+- TLS 1.1 connection is rejected (only TLS 1.2+ allowed)
+- Oversized request body returns 413
+- Non-allowed SSH gateway path returns 403
+- Security headers are present (HSTS, X-Content-Type-Options,
+  X-Frame-Options, etc.)
+- Forged `X-Client-Cert` header is rejected (header sanitization)
+
+**Positive tests:**
+
+- Health endpoint returns 200
+- Vault UI is accessible (200 or 307 redirect)
+- SSH gateway allowed paths are reachable
+
+### Output
+
+The script prints a pass/fail summary for each test and exits with
+code 0 if all tests pass, non-zero otherwise. Output is suitable for
+CI integration.
+
+### Debugging Failures
+
+If a test fails, check:
+
+1. Nginx is running: `systemctl status nginx`
+2. Vault is unsealed: `vault status`
+3. TLS certificates are valid: `openssl s_client -connect 127.0.0.1:443`
+4. CRL is current: `openssl crl -in /etc/nginx/certs/client-ca.crl -noout -nextupdate`
+5. Nginx config is valid: `nginx -t`
+
+---
+
 ## SSH OTP Troubleshooting
 
 ### SELinux `dontaudit` Debugging Technique

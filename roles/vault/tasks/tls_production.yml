@@ -128,6 +128,17 @@
     mode: "0444"
   when: vault_int_ca_pem.content is defined
 
+# Re-deploy vault.hcl now that root.crt (the real Vault PKI Root CA) has
+# just been written above. On this same run, configure.yml rendered
+# vault.hcl BEFORE root.crt existed, so both listeners' tls_client_ca_file
+# still point at the bootstrap self-signed cert (see
+# _deploy_vault_hcl.yml). Re-including it here switches both listeners
+# to the real Root CA; the restart immediately below picks up the change
+# in the same run instead of requiring a second ansible-playbook pass.
+- name: Tls Production | Re-deploy vault.hcl with production Root CA
+  ansible.builtin.include_tasks: _deploy_vault_hcl.yml
+  when: vault_existing_cert_check.rc != 0 or not vault_root_ca_exists.stat.exists
+
 # ------------------------------------------------------------------
 # Browser trust (system + Chrome NSS + Firefox policy). Operates on the
 # persisted root.crt file. Guarded by stat to avoid failing on first run
@@ -209,66 +220,7 @@
 # TLS key protection: file permissions (0400 vault:vault) + SELinux
 # vault_conf_t type enforcement. No chattr +i since Vault Agent
 # (running as vault user) needs to rotate the key without root caps.
-
-# ------------------------------------------------------------------
-# SELinux policy
-# ------------------------------------------------------------------
-- name: Tls Production | Install SELinux policy development tools
-  ansible.builtin.dnf:
-    name:
-      - selinux-policy-devel
-      - make
-    state: present
-
-# If the policy source was deployed on a prior run but compilation failed
-# (e.g. deploy interrupted), the copy task below reports "ok" (unchanged)
-# and the handler never fires. This check detects that gap and forces
-# the handler to run.
-- name: Tls Production | Check if Vault SELinux policy module is loaded
-  ansible.builtin.command:
-    cmd: semodule -l
-  register: __vault_selinux_loaded
-  # "semodule -l" prints bare module names, one per line, with no
-  # trailing space (e.g. "vault\n") -- checking for the substring
-  # "vault " (with a trailing space) never matches, so changed_when
-  # was always true. Also must not match "sshd-vault-ssh-helper",
-  # which legitimately contains "vault" as a substring. Confirmed via
-  # runtime testing (cat -A on the real output).
-  changed_when: "'vault' not in __vault_selinux_loaded.stdout_lines"
-  failed_when: false
-  notify: Compile and install Vault SELinux policy
-
-# Compile/install (handler) only fires when the source actually changed,
-# via the copy task's own change detection below -- semodule -i always
-# exits 0 whether or not anything changed, so a changed_when: rc==0 task
-# would restart Vault on every single run, racing Phase 2's immediate
-# GRUB-hash fetch against Vault still being down.
-- name: Tls Production | Deploy Vault SELinux policy source
-  ansible.builtin.copy:
-    src: "selinux/{{ item }}"
-    dest: "{{ vault_selinux_dir }}/{{ item }}"
-    mode: "0644"
-  loop:
-    - vault.te
-    - vault.fc
-    - vault.if
-    - logrotate-vault.te
-  notify: Compile and install Vault SELinux policy
-
-# Port labeling (semanage port -a vault_cluster_port_t 8201) is now inside
-# the "Compile and install Vault SELinux policy" handler -- it must run
-# AFTER semodule installs the policy that defines vault_cluster_port_t.
-# On a fresh VM, the type doesn't exist until the handler fires.
-
-- name: Tls Production | Restore SELinux contexts for Vault paths
-  ansible.builtin.command:
-    cmd: "restorecon -Rv {{ item }}"
-  loop:
-    - /usr/bin/vault
-    - "{{ vault_config_dir }}"
-    - "{{ vault_data_dir }}"
-    - "{{ vault_log_dir }}"
-    - "{{ vault_run_dir }}"
-    - "{{ vault_agent_run_dir }}"
-  changed_when: false
-  failed_when: false
+#
+# SELinux policy compile/install/port-labeling now happens in
+# install.yml, before Vault's first start -- see the comment there for
+# why (fresh-VM handler-flush-before-source-deploy race).

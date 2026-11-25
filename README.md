@@ -135,7 +135,8 @@ ansible-workstation-firstboot/
     hosts.yml                    # Target host (dynamic IP)
     group_vars/all/
       main.yml                   # All variables (single source of truth)
-      vault.yml                  # Ansible Vault encrypted secrets
+      vault.yml                  # Ansible Vault encrypted secrets (gitignored)
+      vault.yml.example          # Same keys, placeholder values -- copy to vault.yml
   roles/
     common/ dns/ avahi/ auth/    # Custom roles (7 total)
     vault/ proxy/ verification/

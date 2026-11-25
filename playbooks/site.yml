@@ -216,6 +216,7 @@
           {{
             ['rule family="ipv4" source address="127.0.0.1" port port="8200" protocol="tcp" accept',
              'rule family="ipv4" source address="127.0.0.1" port port="8201" protocol="tcp" accept',
+             'rule family="ipv4" source address="127.0.0.1" port port="8202" protocol="tcp" accept',
              'rule family="ipv4" port port="853" protocol="tcp" accept',
              'rule family="ipv4" destination NOT address="127.0.0.1" port port="53" protocol="udp" drop',
              'rule family="ipv4" destination NOT address="127.0.0.1" port port="53" protocol="tcp" drop',
@@ -250,6 +251,27 @@
       when: ansible_virtualization_role | default('host') == 'guest'
       tags:
         - kernel
+        - harden
+
+    # auditctl rejects a "-w <dir>" watch whose path does not exist
+    # ("Error sending add rule data request (No such file or
+    # directory)"), and augenrules then fails the whole rule load. Some
+    # watched directories are created by roles that run AFTER auditd
+    # (e.g. /etc/vault-ssh-helper.d by the auth role in Tier 2), so on a
+    # freshly installed host the auditd role (Tier 1) failed. Confirmed
+    # on a reinstalled VM 2026-11-24. Pre-create any missing watched
+    # directory; no mode/owner is passed, so existing directories keep
+    # their permissions and the owning role still sets its own.
+    - name: Ensure audit-watched directories exist before auditd loads rules
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+      loop: >-
+        {{ auditd_rules | default([])
+           | selectattr('dir', 'defined')
+           | map(attribute='dir') | unique | list }}
+      tags:
+        - auditd
         - harden
 
   roles:

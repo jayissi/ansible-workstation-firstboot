@@ -24,6 +24,9 @@ vault_tls_cert_file: "{{ vault_cert_dir }}/server-chain.crt"
 vault_tls_key_file: "{{ vault_cert_dir }}/server.key"
 vault_tls_client_ca_file: "{{ vault_cert_dir }}/root.crt"
 
+# Dedicated Vault listener for Nginx proxy (requires client certificate)
+vault_proxy_listener_port: 8202
+
 # Nginx proxy cert directory (separate leaf cert, vault.local SAN only)
 vault_proxy_cert_dir: /etc/nginx/certs
 
@@ -46,6 +49,8 @@ vault_pki_nginx_cn: "Nginx Gateway"
 vault_pki_nginx_ou: "Network Services"
 vault_pki_client_auth_cn: "{{ common_admin_user }} - VaultPass"
 vault_pki_client_auth_ou: "Workstation Auth"
+vault_pki_nginx_proxy_client_cn: "Nginx Proxy Client"
+vault_pki_nginx_proxy_client_ou: "Internal Services"
 vault_pki_locality: "Washington"
 vault_pki_province: "District of Columbia"
 vault_pki_country: "US"

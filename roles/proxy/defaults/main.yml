@@ -6,7 +6,7 @@ proxy_listen_address: '127.0.0.1'
 proxy_listen_port: 443
 proxy_server_name: vault.local
 
-proxy_backend_url: 'https://127.0.0.1:8200'
+proxy_backend_url: 'https://127.0.0.1:8202'
 proxy_vault_addr: 'https://127.0.0.1:8200'
 proxy_vault_token: "{{ vault_root_token | default('') }}"
 proxy_leaf_ttl: '2160h'
@@ -17,6 +17,8 @@ proxy_tls_cert: /etc/nginx/certs/server-chain.crt
 proxy_tls_key: /etc/nginx/certs/server.key
 proxy_tls_ca: /etc/nginx/certs/root.crt
 proxy_tls_client_ca: /etc/nginx/certs/client-ca-chain.crt
+proxy_tls_proxy_client_cert: /etc/nginx/certs/proxy-client.crt
+proxy_tls_proxy_client_key: /etc/nginx/certs/proxy-client.key
 proxy_tls_protocols: 'TLSv1.2 TLSv1.3'
 
 # ---------------------------------------------------------------------------

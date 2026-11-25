@@ -145,24 +145,36 @@
     path: /etc/nginx/certs/client-ca.crl
   register: __proxy_crl_check
 
-- name: Configure | Bootstrap CRL from Vault PKI (first run only)
+- name: Configure | Bootstrap Intermediate CRL from Vault PKI (first run only)
   ansible.builtin.uri:
     url: https://vault.local:8200/v1/pki_int/crl/pem
     method: GET
     ca_path: /etc/nginx/certs/root.crt
     return_content: true
     status_code: 200
-  register: __proxy_crl_content
+  register: __proxy_crl_int
   when: not __proxy_crl_check.stat.exists
 
-- name: Configure | Deploy bootstrapped CRL
+- name: Configure | Bootstrap Root CRL from Vault PKI (first run only)
+  ansible.builtin.uri:
+    url: https://vault.local:8200/v1/pki/crl/pem
+    method: GET
+    ca_path: /etc/nginx/certs/root.crt
+    return_content: true
+    status_code: 200
+  register: __proxy_crl_root
+  when: not __proxy_crl_check.stat.exists
+
+- name: Configure | Deploy bootstrapped CRL (Intermediate + Root combined)
   ansible.builtin.copy:
-    content: "{{ __proxy_crl_content.content }}"
+    content: "{{ __proxy_crl_int.content }}\n{{ __proxy_crl_root.content }}"
     dest: /etc/nginx/certs/client-ca.crl
     owner: root
     group: root
     mode: '0444'
-  when: __proxy_crl_content is not skipped
+  when:
+    - __proxy_crl_int is not skipped
+    - __proxy_crl_root is not skipped
 
 - name: Configure | Deploy CRL update systemd service
   ansible.builtin.template:

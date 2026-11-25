@@ -15,14 +15,26 @@
         semanage port -m -t vault_cluster_port_t -p tcp 8200 2>/dev/null || true
       semanage port -a -t vault_cluster_port_t -p tcp 8201 2>/dev/null || \
         semanage port -m -t vault_cluster_port_t -p tcp 8201 2>/dev/null || true
+      semanage port -a -t vault_cluster_port_t -p tcp 8202 2>/dev/null || \
+        semanage port -m -t vault_cluster_port_t -p tcp 8202 2>/dev/null || true
       restorecon -RF /etc/vault.d/ /etc/nginx/certs/ 2>/dev/null || true
   changed_when: true
   notify: Restart vault
 
+# Guarded: install.yml flushes handlers (SELinux module) BEFORE the
+# project vault.hcl is templated. With the HashiCorp RPM, the package
+# ships its own /etc/vault.d/vault.hcl (file storage, 0.0.0.0:8200,
+# /opt/vault/tls cert), so an unguarded restart here STARTED Vault with
+# the package config on a fresh host. Init's "state: started" was then
+# a no-op and "vault operator init" failed against the wrong listener/
+# cert (confirmed on a reinstalled VM, 2026-11-24). Only restart once
+# _deploy_vault_hcl.yml has run in this play; init.yml flushes handlers
+# right before starting Vault so a pending restart is not lost.
 - name: Restart vault
   ansible.builtin.systemd:
     name: vault
     state: restarted
+  when: __vault_hcl_deploy is defined
 
 - name: Restart vault-agent
   ansible.builtin.systemd:

@@ -1,0 +1,47 @@
+---
+# roles/vault/tasks/_deploy_vault_hcl.yml
+# Shared vault.hcl deployment, included from both configure.yml (initial
+# deploy, before the Vault-issued Root CA exists) and tls_production.yml
+# (re-deploy once the Root CA has been written to disk).
+#
+# Bootstrap chicken-and-egg: both Vault listeners set tls_client_ca_file
+# to the Vault PKI Root CA (root.crt). But root.crt is only written by
+# tls_production.yml, which requires Vault to already be started,
+# initialized, unsealed, and have its PKI engine configured -- all of
+# which require Vault to start FIRST. On a truly fresh deploy (no prior
+# Vault state), root.crt does not exist yet, so Vault fails to parse its
+# own listener config and never starts at all:
+#   "Error initializing listener of type tcp: failed to read
+#    tls_client_ca_file: open /etc/vault.d/certs/root.crt: no such file
+#    or directory"
+#
+# Fix: fall back to the bootstrap self-signed cert (vault_tls_cert_file,
+# already created by tls_bootstrap.yml) as a temporary listener CA file
+# so Vault can parse its config and start. Neither listener actually
+# enforces client-cert validation against this file at this stage --
+# listener 1 (8200) treats the CA file as optional trust material, and
+# nothing connects to listener 2 (8202) until Nginx's proxy-client cert
+# is issued later in the same run (pki_engine.yml + agent.yml), which
+# itself requires Vault to be up. Once root.crt is written in
+# tls_production.yml, this file is re-included so the listeners switch
+# to the real Root CA -- picked up by the restart that already happens
+# immediately afterward in tls_production.yml.
+
+- name: Shared | Check if production Root CA exists for listener CA file
+  ansible.builtin.stat:
+    path: "{{ vault_cert_dir }}/root.crt"
+  register: vault_hcl_root_ca_check
+
+- name: Shared | Deploy vault.hcl configuration
+  ansible.builtin.template:
+    src: vault.hcl.j2
+    dest: "{{ vault_config_dir }}/vault.hcl"
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: "0640"
+  vars:
+    vault_tls_client_ca_file_effective: >-
+      {{ vault_tls_client_ca_file if vault_hcl_root_ca_check.stat.exists
+         else vault_tls_cert_file }}
+  register: __vault_hcl_deploy
+  notify: Compile and install Vault SELinux policy

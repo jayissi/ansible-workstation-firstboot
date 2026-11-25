@@ -29,7 +29,7 @@ execute in this order because each depends on the previous:
 | 2     | `dns`    | Unbound (DNSSEC + DoT + blocklist), dnsconfd (NM integration, resolv.conf, split-DNS), browser DoH lockdown                                                                           |
 | 3     | `avahi`  | Hardened mDNS/DNS-SD (user-service publishing blocked, no HINFO)                                                                                                                      |
 | 4     | `vault`  | Install, bootstrap TLS (ECDSA P-384), configure, init (age+TPM2), PKI engine (3 roles), AppRole, Agent, production TLS, cert auth + OIDC, VaultPass KV, browser trust, secrets backup |
-| 5     | `proxy`  | Nginx reverse proxy (`https://vault.local` → `:8200`), cert rotation via systemd path unit                                                                                            |
+| 5     | `proxy`  | Nginx reverse proxy (`https://vault.local` → `:8202` via backend mTLS), cert rotation via systemd path unit                                                                           |
 
 ### Phase 2 -- Harden
 
@@ -203,7 +203,7 @@ fingerprinting disabled, core dumps prevented, wide-area DNS-SD off.
 Complete HashiCorp Vault CE lifecycle: binary installation, bootstrap
 TLS (self-signed ECDSA P-384), server configuration, operator init
 with age+TPM2 key encryption, internal PKI engine with Root and
-Intermediate CA (ECDSA P-384, CNSA 2.0 compliant), 3 distinct PKI
+Intermediate CA (ECDSA P-384, CNSA 2.0 compliant), 4 distinct PKI
 roles, AppRole authentication, Vault Agent for automated cert rotation,
 production TLS certificate swap, TLS client certificate authentication
 with OIDC provider integration (`cert_auth.yml`), KV secret seeding
@@ -222,35 +222,39 @@ the syslog audit backend (Vault needs to send log entries to
 
 #### PKI Roles
 
-The intermediate CA issues leaf certificates through 3 distinct PKI
-roles. All roles use `allow_any_name: true` and
+The intermediate CA issues leaf certificates through 4 distinct PKI
+roles. The server and client-auth roles use `allow_any_name: true` and
 `enforce_hostnames: false` because the Common Name field carries a
 descriptive identity string (e.g., "HashiCorp Vault", "Nginx Gateway",
 "jayissi - VaultPass"), not a hostname. Actual hostname validation
 happens via SANs; modern TLS (RFC 6125) uses SANs exclusively for
-hostname matching.
+hostname matching. The `nginx-proxy-client` role uses
+`allow_any_name: false` to restrict issuance to the configured CN
+only (CAB reviewer R1 recommendation).
 
-| PKI Role        | Purpose                     | CN Example          | Key Flags                       | TTL   |
-|-----------------|-----------------------------|---------------------|---------------------------------|-------|
-| `vault-server`  | Vault API TLS               | HashiCorp Vault     | `server_flag: true`             | 2160h |
-| `nginx-gateway` | Nginx reverse proxy TLS     | Nginx Gateway       | `server_flag: true`             | 2160h |
-| `client-auth`   | TLS client cert (VaultPass) | jayissi - VaultPass | `client_flag: true`, ClientAuth | 72h   |
+| PKI Role             | Purpose                      | CN Example          | Key Flags                       | TTL   |
+|----------------------|------------------------------|---------------------|---------------------------------|-------|
+| `vault-server`       | Vault API TLS                | HashiCorp Vault     | `server_flag: true`             | 2160h |
+| `nginx-gateway`      | Nginx reverse proxy TLS      | Nginx Gateway       | `server_flag: true`             | 2160h |
+| `client-auth`        | TLS client cert (VaultPass)  | jayissi - VaultPass | `client_flag: true`, ClientAuth | 72h   |
+| `nginx-proxy-client` | Backend mTLS (Nginx → Vault) | Nginx Proxy Client  | `client_flag: true`, ClientAuth | 2160h |
 
-All three roles inherit `vault_pki_key_type: ec` /
+All four roles inherit `vault_pki_key_type: ec` /
 `vault_pki_key_bits: 384` (P-384) from defaults.
 
 #### Vault Agent Templates
 
-Vault Agent manages 4 certificate/credential templates using the
+Vault Agent manages 5 certificate/credential templates using the
 single-`pkiCert` pattern (one API call produces cert + CA + key in a
 combined output, then a command hook splits them into individual files):
 
-| Template                   | PKI Role / Engine             | Destination                                     | Perms | Split Command                        |
-|----------------------------|-------------------------------|-------------------------------------------------|-------|--------------------------------------|
-| `leaf-combined.tpl`        | `pki_int/issue/vault-server`  | `/etc/vault.d/certs/` (via split)               | 0400  | `vault-agent-split-cert`             |
-| `proxy-combined.tpl`       | `pki_int/issue/nginx-gateway` | `/etc/nginx/certs/` (via split)                 | 0400  | `vault-agent-split-proxy-cert`       |
-| `client-auth-combined.tpl` | `pki_int/issue/client-auth`   | `/opt/vault/agent-run/client-auth-combined.tmp` | 0400  | `vault-agent-split-client-cert`      |
-| `breakglass-ssh-cert.tpl`  | `ssh-ca/sign/breakglass`      | `/etc/vault.d/certs/breakglass-cert.pub`        | 0444  | *(none — output is the signed cert)* |
+| Template                    | PKI Role / Engine                  | Destination                                     | Perms | Split Command                         |
+|-----------------------------|------------------------------------|-------------------------------------------------|-------|---------------------------------------|
+| `leaf-combined.tpl`         | `pki_int/issue/vault-server`       | `/etc/vault.d/certs/` (via split)               | 0400  | `vault-agent-split-cert`              |
+| `proxy-combined.tpl`        | `pki_int/issue/nginx-gateway`      | `/etc/nginx/certs/` (via split)                 | 0400  | `vault-agent-split-proxy-cert`        |
+| `proxy-client-combined.tpl` | `pki_int/issue/nginx-proxy-client` | `/etc/nginx/certs/` (via split)                 | 0400  | `vault-agent-split-proxy-client-cert` |
+| `client-auth-combined.tpl`  | `pki_int/issue/client-auth`        | `/opt/vault/agent-run/client-auth-combined.tmp` | 0400  | `vault-agent-split-client-cert`       |
+| `breakglass-ssh-cert.tpl`   | `ssh-ca/sign/breakglass`           | `/etc/vault.d/certs/breakglass-cert.pub`        | 0444  | *(none — output is the signed cert)*  |
 
 The break-glass SSH cert template reads the admin's Ed25519 public key
 from `/etc/vault.d/certs/breakglass-admin-pubkey.pub` — a
@@ -262,10 +266,40 @@ permissions and the `vault` service account cannot traverse it.
 ### proxy
 
 Nginx reverse proxy serving `https://vault.local` (port 443) proxied
-to Vault on port 8200. Uses a separate PKI-issued leaf certificate
-(vault.local SAN only). Cert rotation handled by a systemd path unit
-watching for file changes (see
-[ADR-0003](decisions/ADR-0003-cert-rotation-path-units.md)).
+to Vault on port 8202 via backend mTLS. The dedicated Vault listener
+on port 8202 requires a client certificate
+(`tls_require_and_verify_client_cert = true`); Nginx presents the
+`nginx-proxy-client` PKI-issued cert via `proxy_ssl_certificate` and
+`proxy_ssl_certificate_key` in all three vhost templates (vault-proxy,
+vault-status, vault-ssh-gateway). Uses a separate PKI-issued server
+certificate (vault.local SAN only) for the frontend TLS termination.
+Cert rotation handled by a systemd path unit watching for file changes
+(see [ADR-0003](decisions/ADR-0003-cert-rotation-path-units.md)).
+
+#### Dual-Listener Architecture (Vault Ports 8200 / 8202)
+
+Vault exposes two TCP listeners on the loopback interface, each with
+a distinct trust model:
+
+| Port | Listener Purpose          | Client Cert Required | Consumers                     |
+|------|---------------------------|----------------------|-------------------------------|
+| 8200 | CLI / Vault Agent / Admin | No                   | `vault` CLI, Vault Agent, API |
+| 8202 | Nginx Reverse Proxy       | Yes                  | Nginx only                    |
+
+Port 8202 was chosen because port 8201 is already reserved for Vault
+Raft cluster communications. The 8202 listener uses the same server
+TLS certificate as 8200 but adds
+`tls_require_and_verify_client_cert = true` with `tls_client_ca_file`
+pointing to the Intermediate CA. Only Nginx — presenting its
+`nginx-proxy-client` certificate — can connect. This prevents any
+process that reaches the loopback from impersonating the proxy
+without a valid client certificate.
+
+Both listeners share the same `x_forwarded_for_authorized_addrs`,
+`x_forwarded_for_client_cert_header`, and
+`x_forwarded_for_client_cert_header_decoders` configuration, so the
+browser's forwarded TLS client certificate is processed identically
+regardless of which listener receives the request.
 
 ### auth
 
@@ -466,14 +500,14 @@ branch.
 The Nginx reverse proxy implements a 6-layer defense-in-depth
 architecture for traffic reaching Vault through `https://vault.local`:
 
-| Layer | Name                  | Controls                                                                                                                      |
-|-------|-----------------------|-------------------------------------------------------------------------------------------------------------------------------|
-| 1     | Network perimeter     | Firewall `DROP` default policy; Vault bound to `127.0.0.1:8200` only; Nginx on `127.0.0.1:443`                                |
-| 2     | TLS + identity        | `ssl_verify_client optional` with CA chain validation, CRL checking (`ssl_crl`), ECDSA-only cipher suite, session tickets off |
-| 3     | HTTP security         | HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, CSP report-only, `server_tokens off`      |
-| 4     | Proxy trust           | `X-Client-Cert` header sanitization (clear then set from `$ssl_client_escaped_cert`), `X-Real-IP` from `$remote_addr`         |
-| 5     | Vault authorization   | `auth/cert/login` via forwarded cert, ACL policies (`vaultpass` — CRUD), token TTLs (1h idle / 24h max)                       |
-| 6     | Operational assurance | Per-vhost `vault_mtls` log format with cert fingerprint/DN/serial, CRL hourly refresh timer, `nginx -t` before every reload   |
+| Layer | Name                  | Controls                                                                                                                                                                                                               |
+|-------|-----------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 1     | Network perimeter     | Firewall `DROP` default policy; Vault bound to `127.0.0.1:8200` only; Nginx on `127.0.0.1:443`                                                                                                                         |
+| 2     | TLS + identity        | `ssl_verify_client optional` with CA chain validation, active dual-CRL revocation checking (`ssl_crl` — Intermediate + Root CA with `nextUpdate` staleness, fail-closed), ECDSA-only cipher suite, session tickets off |
+| 3     | HTTP security         | HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, CSP report-only, `server_tokens off`                                                                                               |
+| 4     | Proxy trust           | `X-Client-Cert` header sanitization (clear then set from `$ssl_client_escaped_cert`), `X-Real-IP` from `$remote_addr`, backend mTLS to Vault `:8202` (`proxy_ssl_certificate` + `proxy_ssl_certificate_key`)           |
+| 5     | Vault authorization   | `auth/cert/login` via forwarded cert, ACL policies (`vaultpass` — CRUD), token TTLs (1h idle / 24h max)                                                                                                                |
+| 6     | Operational assurance | Per-vhost `vault_mtls` log format with cert fingerprint/DN/serial, CRL hourly refresh timer, `nginx -t` before every reload                                                                                            |
 
 Rate limiting applies at Layer 3: auth endpoints at `5r/s`, API
 endpoints at `30r/s`, connection limit of `20/IP`. The default-deny

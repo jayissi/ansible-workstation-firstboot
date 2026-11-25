@@ -10,13 +10,7 @@
     state: present
 
 - name: Configure | Deploy vault.hcl configuration
-  ansible.builtin.template:
-    src: vault.hcl.j2
-    dest: "{{ vault_config_dir }}/vault.hcl"
-    owner: "{{ vault_user }}"
-    group: "{{ vault_group }}"
-    mode: "0640"
-  notify: Restart vault
+  ansible.builtin.include_tasks: _deploy_vault_hcl.yml
 
 - name: Configure | Deploy Vault systemd service
   ansible.builtin.template:
@@ -27,7 +21,7 @@
     mode: "0644"
   notify:
     - Reload systemd
-    - Restart vault
+    - Compile and install Vault SELinux policy
 
 # Check the ACTUAL FILE on disk rather than a runtime fact that only
 # gets set during init.yml's first-run block. Without this, reruns

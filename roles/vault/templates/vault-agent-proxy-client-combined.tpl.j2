@@ -1,0 +1,7 @@
+{{ "{{" }}- with pkiCert "pki_int/issue/nginx-proxy-client" "common_name={{ vault_pki_nginx_proxy_client_cn }}" "alt_names={{ vault_local_hostname }}" "ttl={{ vault_pki_leaf_ttl }}" -{{ "}}" }}
+-----BEGIN VAULT-AGENT-PROXY-CLIENT-CERT-----
+{{ "{{" }} .Cert {{ "}}" }}
+{{ "{{" }} .CA {{ "}}" }}
+-----BEGIN VAULT-AGENT-PROXY-CLIENT-KEY-----
+{{ "{{" }} .Key {{ "}}" }}
+{{ "{{" }}- end -{{ "}}" }}

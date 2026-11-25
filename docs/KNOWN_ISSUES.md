@@ -159,6 +159,26 @@ must appear before `validator` in the module chain.
 **Validation:** `unbound-control status` shows `respip` in the module
 list; `dig` queries for RPZ-blocked domains return `NXDOMAIN`.
 
+**Do not reorder to `validator respip iterator`** (attempted 2026-11-24
+in response to a CVE-2026-50243 "validate before rewrite" write-up).
+Unbound 1.26.2 rejects that order at startup:
+`unbound-checkconf: fatal error: module conf 'validator respip iterator'
+is not known to work`, and `unbound.service` fails, taking local DNS
+down. Unbound modules form a stack: the query descends the list and the
+answer ascends it in reverse, so with `respip validator iterator` the
+validator already sees (and SERVFAILs) a BOGUS answer before `respip`
+can rewrite it. Verified on testfedora with the original order:
+`isc.org` / `fedoraproject.org` NOERROR + AD, `dnssec-failed.org`
+SERVFAIL, RPZ-listed `0-02.net` NXDOMAIN. Mitigate CVE-class issues in
+this area by keeping `unbound` patched (`dnf upgrade unbound`), not by
+reordering modules.
+
+**Recovery note:** the dns role downloads `root.hints` before it
+deploys this drop-in, so if a bad `module-config` stops Unbound the
+role cannot repair itself (name resolution fails first). Fix the
+drop-in by hand, run `unbound-checkconf`, then restart `unbound` and
+`dnsconfd`.
+
 **Status:** Fixed.
 
 ---
@@ -825,18 +845,30 @@ with "blocked by the administrator." Chrome version 156.
 **Root Cause:** Chrome 139+ fully removed Manifest V2 extension support.
 The `ExtensionManifestV2Availability` enterprise policy was removed in
 Chrome 139. Both uBlock Origin (`cjpalhdlnbpafiamejdnhcphjbkeiagm`) and
-VaultPass (`kbndeonibamcpiibocdhlagccdlmefco`) are MV2-only extensions
-with no MV3 versions available.
+VaultPass (`kbndeonibamcpiibocdhlagccdlmefco`) were MV2-only at the
+time of testing (Chrome 156, October 2026).
 
-**Fix:** Removed all Chrome extension policies. Chrome retains only
-bookmarks, DNS security, and auto-cert-select policies. Extensions are
-Firefox-only for this project.
+**Fix:** Originally removed all Chrome extension policies (MV2-only at
+time of testing). After confirming VaultPass v2.3.5+ on Chrome Web
+Store is Manifest V3, re-enabled VaultPass as a force-installed Chrome
+extension with toolbar pinning. uBlock Origin remains excluded (MV2-only;
+uBlock Origin Lite is the MV3 alternative but is a different extension).
 
 **Validation:** No extension-related errors in Chrome. Chrome policies
 clean (bookmarks.json + dns-security.json only).
 
 **Status:** Fixed (architectural constraint — MV2 is permanently removed
 from Chrome).
+
+**Update (CAB review):** VaultPass v2.7 on GitHub master and v2.6 on
+Firefox AMO are now **Manifest V3**. The Chrome Web Store version
+(v2.3.5) is also MV3. This means VaultPass may now work on Chrome 139+.
+The `importScripts` crash in `background.js` is no longer a bug — it is
+a valid Web Worker API call within an MV3 service worker context.
+Re-evaluate Chrome VaultPass deployment after confirming the AMO/CWS
+versions are MV3-compatible with the deployed Vault configuration.
+uBlock Origin remains MV2-only on Chrome (uBlock Origin Lite is the
+MV3 alternative but is a different extension).
 
 ---
 
@@ -894,6 +926,19 @@ bootstrap validates TLS against the private Root CA.
 
 Deferred items tracked for future implementation. These are not
 blocking the current plan and are listed in rough priority order.
+
+### Active CRL Revocation Checking (`ssl_crl`)
+
+~~The `ssl_crl` directive in `vault-proxy.conf.j2` was commented out
+pending dual-CRL fetch implementation, staleness validation, and
+fail-closed behavior.~~
+
+**Status:** Resolved — `ssl_crl` is now active with dual-CRL fetch
+(Intermediate + Root CA), `nextUpdate` staleness check with
+fail-closed behavior, CRL backup before replacement, and automatic
+rollback on `nginx -t` failure. See Phase A implementation and
+[OPERATIONS.md](OPERATIONS.md) for the CRL emergency revocation
+procedure.
 
 ### SELinux Option B — Dedicated `vault_ssh_helper_t` Domain Transition
 
@@ -1366,3 +1411,81 @@ for its dnsconfd integration. Requires careful testing for SELinux
 interaction — the Vault syslog audit debugging in this session
 demonstrated that `PrivateDevices=yes` can cause unexpected failures
 when combined with custom SELinux domains.
+
+**Priority 24 — Convert `validate_certs: false` to `ca_path` in pki_engine.yml:**
+All 27 `ansible.builtin.uri` tasks in `roles/vault/tasks/pki_engine.yml`
+use `validate_certs: false` because Ansible runs before the system CA
+trust store includes the private Root CA. This is a bootstrap ordering
+constraint (chicken-and-egg problem): the private CA does not exist in
+the system trust store until the playbook creates it, and the `uri` tasks
+that create the PKI happen in the same playbook run. The CRL bootstrap
+task was already converted to use `ca_path` as a per-task fix. Apply the
+same `ca_path` pattern to all 27 `uri` tasks in `pki_engine.yml`,
+pointing to the Root CA file on disk (`/etc/vault.d/certs/root.crt`)
+which exists after `tls_production.yml` runs. Tasks that execute before
+the Root CA is on disk (bootstrap-only, gated by `when` conditions) may
+retain `validate_certs: false` with an inline comment documenting the
+ordering constraint. No further deep-dive is needed — the pattern is
+proven by the CRL bootstrap fix and the approach is well understood.
+Identified by CAB reviewer R1 as a production readiness concern.
+
+**Priority 25 — Vault audit remote log forwarding to SIEM:**
+HashiCorp recommends at least two audit devices with at least one
+forwarding to a remote system. Currently Vault has file + syslog audit
+backends, both local. Add centralized SIEM forwarding (e.g., via rsyslog
+or a dedicated audit socket backend) for tamper-resistant, queryable
+audit trails. CAB reviewer R1 identified this as a production
+prerequisite.
+
+**Priority 26 — SSH gateway mTLS for bastion hosts:**
+The SSH credential gateway (port 8443) does not request client
+certificates from bastion hosts. It relies on source-IP firewall
+restriction + Vault token authentication. Issue each bastion a unique
+client certificate via a dedicated PKI role and add
+`ssl_verify_client on` + `ssl_client_certificate` to the gateway vhost
+for independent bastion identity verification. CAB reviewer R1
+recommendation.
+
+**Priority 27 — SSH gateway HTTP method restriction:**
+The SSH gateway location blocks accept all HTTP methods. The credential
+issuance endpoints (`/v1/ssh-otp/creds/` and `/v1/ssh-ca/sign/`) only
+require POST. Add `limit_except POST { deny all; }` to both location
+blocks to prevent GET, PUT, DELETE, and other methods from reaching
+Vault. CAB reviewer R1 recommendation.
+
+**Priority 28 — Default-deny catch-all for port 8443:**
+The default-deny virtual host (`default-deny.conf`) covers port 443
+only. Port 8443 (SSH gateway) has no separate default server block for
+unknown hostnames. Add a default_server block on port 8443 that returns
+444, matching the port 443 pattern. CAB reviewer R1 recommendation.
+
+**Priority 29 — CSP report-uri / report-to endpoint:**
+The Content-Security-Policy-Report-Only header has no `report-uri` or
+`report-to` directive. Without a reporting endpoint, CSP violations are
+only visible in browser DevTools, not server-side. Configure a local
+reporting endpoint or use Vault's native UI header mechanism once CSP is
+promoted to enforcing mode. CAB reviewer R1 and MDN best practice.
+
+**Priority 30 — Fedora lifecycle / RHEL migration evaluation:**
+Fedora has an approximately 13-month release maintenance lifecycle,
+requiring frequent major-version upgrades. For a customer-facing
+production secrets management platform, evaluate migration to RHEL 9 or
+RHEL 10 for longer support cycles, controlled package updates, and a
+defined Nginx/Vault upgrade schedule. CAB reviewer R1 raised this as a
+production platform concern.
+
+**Priority 31 — Structured JSON access logging for SIEM:**
+The current `vault_mtls` log format uses flat text fields. Convert to
+structured JSON format with dedicated keys for cert serial, DN,
+fingerprint, cipher, request method, URI (without query string), status,
+and upstream timing. This enables immediate SIEM parsing and alerting on
+specific revoked serials or unexpected cipher negotiations. CAB reviewers
+R1, R2, and R3 consensus.
+
+**Priority 32 — Browser Cache-Control response headers:**
+Disabling Nginx's proxy cache (`proxy_cache off`) prevents server-side
+caching but does not instruct browsers or intermediate proxies to avoid
+caching sensitive Vault responses. Add
+`Cache-Control: no-store, no-cache, must-revalidate, private` and
+`Pragma: no-cache` to the security-headers.inc snippet. CAB reviewer R1
+identified this gap.

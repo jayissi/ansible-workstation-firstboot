@@ -66,6 +66,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (v1.4.0): `devlog_t` type in require block, `write` permission on
   self `unix_dgram_socket`, `sendto` to
   `devlog_t:unix_dgram_socket`
+- CRL revocation checking enabled (`ssl_crl`) with dual-CRL fetch
+  (Intermediate + Root CA), `nextUpdate` staleness check with
+  fail-closed behavior, CRL backup and rollback on `nginx -t` failure
+- Automated security regression test suite (`make security-test`)
+  with negative assertions (unknown host, TLS 1.1, oversized body,
+  SSH gateway path restriction, header injection) and positive
+  assertions (health endpoint, Vault UI, SSH gateway)
+- Backend mutual TLS via dedicated Vault listener on port 8202 with
+  `tls_require_and_verify_client_cert = true`; new
+  `nginx-proxy-client` PKI role with ClientAuth EKU; Vault Agent
+  auto-rotation
+- `limit_req_status 429` for proper HTTP 429 on rate-limited requests
+  (Nginx defaults to 503)
+- CAB red-lit items added to backlog (Priorities 24–32)
 
 ### Fixed
 
@@ -126,6 +140,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Vault SELinux policy bumped to v1.4.0
 - Logrotate vault-audit config uses `copytruncate` instead of
   `create` (avoids SELinux label issues on rotated files)
+- `proxy_backend_url` changed from `https://127.0.0.1:8200` to
+  `https://127.0.0.1:8202` (dedicated proxy listener with required
+  client cert)
+- CRL update script rewritten for dual-fetch with hostname resolution
+  consistency (`--resolve vault.local:8200:127.0.0.1`)
+- All three proxy vhost templates (vault-proxy, vault-status,
+  vault-ssh-gateway) now include `proxy_ssl_certificate` and
+  `proxy_ssl_certificate_key` for backend client cert presentation
 
 ## [0.2.0] - 2026-10-30
 

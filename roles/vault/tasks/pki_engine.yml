@@ -278,6 +278,44 @@
       - 200
       - 204
 
+- name: Pki Engine | Create PKI role for Nginx proxy client certificates
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/pki_int/roles/nginx-proxy-client"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      allowed_domains:
+        - "{{ vault_local_hostname }}"
+        - "{{ vault_pki_nginx_proxy_client_cn }}"
+      allow_any_name: false
+      enforce_hostnames: false
+      allow_subdomains: false
+      allow_bare_domains: true
+      allow_localhost: false
+      key_type: "{{ vault_pki_key_type }}"
+      key_bits: "{{ vault_pki_key_bits }}"
+      organization: "{{ vault_pki_organization }}"
+      ou: "{{ vault_pki_nginx_proxy_client_ou }}"
+      locality: "{{ vault_pki_locality }}"
+      province: "{{ vault_pki_province }}"
+      country: "{{ vault_pki_country }}"
+      key_usage:
+        - DigitalSignature
+      ext_key_usage:
+        - ClientAuth
+      server_flag: false
+      client_flag: true
+      ttl: "{{ vault_pki_leaf_ttl }}"
+      max_ttl: "{{ vault_pki_leaf_max_ttl }}"
+      require_cn: true
+      generate_lease: true
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+
 - name: Pki Engine | Create PKI role for client auth certificates
   ansible.builtin.uri:
     url: "{{ vault_addr }}/v1/pki_int/roles/client-auth"
@@ -304,7 +342,17 @@
       ttl: "72h"
       max_ttl: "168h"
       require_cn: true
-      generate_lease: true
+      # Disable lease tracking for client-auth certs. Without this,
+      # vault.service restarts orphan Vault Agent's auth token, which
+      # cascades to revoking ALL leases under that token -- including
+      # the PKI cert lease. The cert then appears on the CRL as
+      # "revoked", and nginx's ssl_crl check returns 400 Bad Request
+      # even though the cert's X.509 validity hasn't expired.
+      # Confirmed via runtime testing: openssl verify -crl_check
+      # showed "error 23 at 0 depth lookup: certificate revoked" for
+      # a cert that was still within its 72h TTL.
+      generate_lease: false
+      no_store: true
     validate_certs: false
     status_code:
       - 200
@@ -344,49 +392,52 @@
       - 200
   register: vault_auth_methods
 
+- name: Pki Engine | Create vault-agent-tls policy (server cert rotation)
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/policies/acl/vault-agent-tls"
+    method: PUT
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      policy: |
+        path "pki_int/issue/vault-server" {
+          capabilities = ["create", "update"]
+        }
+        path "pki_int/issue/nginx-gateway" {
+          capabilities = ["create", "update"]
+        }
+        path "pki_int/issue/nginx-proxy-client" {
+          capabilities = ["create", "update"]
+        }
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+
+- name: Pki Engine | Create vault-agent-auth policy (identity-bearing certs)
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/policies/acl/vault-agent-auth"
+    method: PUT
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      policy: |
+        path "pki_int/issue/client-auth" {
+          capabilities = ["create", "update"]
+        }
+        path "ssh-ca/sign/breakglass" {
+          capabilities = ["create", "update"]
+        }
+    validate_certs: false
+    status_code:
+      - 200
+      - 204
+
 - name: Pki Engine | Configure AppRole auth
   when: "'approle/' not in vault_auth_methods.json"
   block:
-    - name: Pki Engine | Create vault-agent-tls policy (server cert rotation)
-      ansible.builtin.uri:
-        url: "{{ vault_addr }}/v1/sys/policies/acl/vault-agent-tls"
-        method: PUT
-        headers:
-          X-Vault-Token: "{{ _vault_token }}"
-        body_format: json
-        body:
-          policy: |
-            path "pki_int/issue/vault-server" {
-              capabilities = ["create", "update"]
-            }
-            path "pki_int/issue/nginx-gateway" {
-              capabilities = ["create", "update"]
-            }
-        validate_certs: false
-        status_code:
-          - 200
-          - 204
-
-    - name: Pki Engine | Create vault-agent-auth policy (identity-bearing certs)
-      ansible.builtin.uri:
-        url: "{{ vault_addr }}/v1/sys/policies/acl/vault-agent-auth"
-        method: PUT
-        headers:
-          X-Vault-Token: "{{ _vault_token }}"
-        body_format: json
-        body:
-          policy: |
-            path "pki_int/issue/client-auth" {
-              capabilities = ["create", "update"]
-            }
-            path "ssh-ca/sign/breakglass" {
-              capabilities = ["create", "update"]
-            }
-        validate_certs: false
-        status_code:
-          - 200
-          - 204
-
     - name: Pki Engine | Enable AppRole auth method
       ansible.builtin.uri:
         url: "{{ vault_addr }}/v1/sys/auth/approle"

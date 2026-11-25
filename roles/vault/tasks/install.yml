@@ -71,6 +71,71 @@
   changed_when: false
   failed_when: false
 
+# ------------------------------------------------------------------
+# SELinux policy (compiled/installed here, before Vault ever starts)
+# ------------------------------------------------------------------
+# Previously lived in tls_production.yml, much later in the role. On a
+# truly fresh deploy that's too late: vault.hcl's template-deploy notify
+# (configure.yml) and browser_trust.yml's own explicit
+# meta: flush_handlers both flush the "Compile and install Vault
+# SELinux policy" handler BEFORE these source files ever get copied to
+# vault_selinux_dir, so the handler fails: "No rule to make target
+# 'vault.pp'" / "find: '*': No such file or directory" (confirmed via
+# runtime testing on a fresh VM). Deploying + flushing here, before
+# install.yml even finishes, means the module is compiled, installed,
+# and the vault_cluster_port_t ports (8200/8201/8202) are labeled
+# BEFORE Vault's first start in init.yml -- Vault now runs under proper
+# vault_t confinement from the very first start, rather than an initial
+# unconfined window that got tightened later.
+- name: Install | Install SELinux policy development tools
+  ansible.builtin.dnf:
+    name:
+      - selinux-policy-devel
+      - make
+    state: present
+
+- name: Install | Check if Vault SELinux policy module is loaded
+  ansible.builtin.command:
+    cmd: semodule -l
+  register: __vault_selinux_loaded
+  # "semodule -l" prints bare module names, one per line, with no
+  # trailing space (e.g. "vault\n") -- checking for the substring
+  # "vault " (with a trailing space) never matches, so changed_when
+  # was always true. Also must not match "sshd-vault-ssh-helper", which
+  # legitimately contains "vault" as a substring. Confirmed via runtime
+  # testing (cat -A on the real output).
+  changed_when: "'vault' not in __vault_selinux_loaded.stdout_lines"
+  failed_when: false
+  notify: Compile and install Vault SELinux policy
+
+- name: Install | Deploy Vault SELinux policy source
+  ansible.builtin.copy:
+    src: "selinux/{{ item }}"
+    dest: "{{ vault_selinux_dir }}/{{ item }}"
+    mode: "0644"
+  loop:
+    - vault.te
+    - vault.fc
+    - vault.if
+    - logrotate-vault.te
+  notify: Compile and install Vault SELinux policy
+
+- name: Install | Apply Vault SELinux policy module immediately
+  ansible.builtin.meta: flush_handlers
+
+- name: Install | Restore SELinux contexts for Vault paths
+  ansible.builtin.command:
+    cmd: "restorecon -Rv {{ item }}"
+  loop:
+    - /usr/bin/vault
+    - "{{ vault_config_dir }}"
+    - "{{ vault_data_dir }}"
+    - "{{ vault_log_dir }}"
+    - "{{ vault_run_dir }}"
+    - "{{ vault_agent_run_dir }}"
+  changed_when: false
+  failed_when: false
+
 - name: Install | Deploy polkit rule for Vault Agent cert-reload
   ansible.builtin.copy:
     dest: /etc/polkit-1/rules.d/49-vault-agent-reload.rules

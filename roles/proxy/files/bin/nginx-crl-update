@@ -1,37 +1,106 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CRL_URL="https://127.0.0.1:8200/v1/pki_int/crl/pem"
+INT_CRL_URL="https://vault.local:8200/v1/pki_int/crl/pem"
+ROOT_CRL_URL="https://vault.local:8200/v1/pki/crl/pem"
 CACERT="/etc/vault.d/certs/root.crt"
-CRL_TMP="/etc/nginx/certs/client-ca.crl.new"
+RESOLVE="--resolve vault.local:8200:127.0.0.1"
 CRL_ACTIVE="/etc/nginx/certs/client-ca.crl"
+CRL_BACKUP="/etc/nginx/certs/client-ca.crl.bak"
+INT_CRL_TMP="$(mktemp /tmp/crl-int.XXXXXX)"
+ROOT_CRL_TMP="$(mktemp /tmp/crl-root.XXXXXX)"
+COMBINED_TMP="$(mktemp /tmp/crl-combined.XXXXXX)"
+
+cleanup() { rm -f "${INT_CRL_TMP}" "${ROOT_CRL_TMP}" "${COMBINED_TMP}"; }
+trap cleanup EXIT
 
 log() { printf '[%s] %s\n' "$(date -Iseconds)" "$*"; }
 
-log "Fetching CRL from Vault PKI..."
-curl --cacert "${CACERT}" -sf "${CRL_URL}" -o "${CRL_TMP}" || {
-	log "ERROR: Failed to fetch CRL from ${CRL_URL}"
-	rm -f "${CRL_TMP}"
-	exit 1
-}
+FETCH_OK=true
 
-log "Validating CRL..."
-openssl crl -in "${CRL_TMP}" -noout || {
-	log "ERROR: CRL validation failed"
-	rm -f "${CRL_TMP}"
-	exit 1
-}
+# --- Fetch Intermediate CRL ---
+log "Fetching Intermediate CRL from ${INT_CRL_URL}..."
+if ! curl ${RESOLVE} --cacert "${CACERT}" -sf "${INT_CRL_URL}" -o "${INT_CRL_TMP}"; then
+    log "WARNING: Failed to fetch Intermediate CRL"
+    FETCH_OK=false
+fi
 
-log "Deploying CRL..."
-chmod 0444 "${CRL_TMP}"
-mv -f "${CRL_TMP}" "${CRL_ACTIVE}"
+# --- Fetch Root CRL ---
+log "Fetching Root CRL from ${ROOT_CRL_URL}..."
+if ! curl ${RESOLVE} --cacert "${CACERT}" -sf "${ROOT_CRL_URL}" -o "${ROOT_CRL_TMP}"; then
+    log "WARNING: Failed to fetch Root CRL"
+    FETCH_OK=false
+fi
 
+# --- Staleness check on existing CRL (fail-closed) ---
+if [[ "${FETCH_OK}" != "true" ]] && [[ -f "${CRL_ACTIVE}" ]]; then
+    NEXT_UPDATE=$(openssl crl -in "${CRL_ACTIVE}" -noout -nextupdate 2>/dev/null | cut -d= -f2)
+    if [[ -n "${NEXT_UPDATE}" ]]; then
+        NEXT_EPOCH=$(date -d "${NEXT_UPDATE}" +%s 2>/dev/null || echo 0)
+        NOW_EPOCH=$(date +%s)
+        if [[ "${NOW_EPOCH}" -ge "${NEXT_EPOCH}" ]]; then
+            log "ERROR: Existing CRL is expired (nextUpdate=${NEXT_UPDATE}) and fetch failed — refusing to deploy (fail-closed)"
+            logger -p auth.err "nginx-crl-update: CRL expired and fetch failed — fail-closed, no deployment"
+            exit 1
+        fi
+    fi
+    log "WARNING: Fetch failed but existing CRL is still valid — keeping current CRL"
+    logger -p auth.warning "nginx-crl-update: CRL fetch failed but existing CRL still within validity period"
+    exit 0
+fi
+
+if [[ "${FETCH_OK}" != "true" ]]; then
+    log "ERROR: CRL fetch failed and no existing CRL to validate"
+    logger -p auth.err "nginx-crl-update: CRL fetch failed and no existing CRL present"
+    exit 1
+fi
+
+# --- Validate fetched CRLs ---
+log "Validating Intermediate CRL..."
+if ! openssl crl -in "${INT_CRL_TMP}" -noout; then
+    log "ERROR: Intermediate CRL validation failed"
+    logger -p auth.err "nginx-crl-update: Intermediate CRL validation failed"
+    exit 1
+fi
+
+log "Validating Root CRL..."
+if ! openssl crl -in "${ROOT_CRL_TMP}" -noout; then
+    log "ERROR: Root CRL validation failed"
+    logger -p auth.err "nginx-crl-update: Root CRL validation failed"
+    exit 1
+fi
+
+# --- Concatenate CRLs (ensure newline between PEM blocks) ---
+log "Concatenating Intermediate + Root CRLs..."
+{ cat "${INT_CRL_TMP}"; printf '\n'; cat "${ROOT_CRL_TMP}"; } > "${COMBINED_TMP}"
+chmod 0444 "${COMBINED_TMP}"
+
+# --- Backup current CRL ---
+if [[ -f "${CRL_ACTIVE}" ]]; then
+    log "Backing up current CRL to ${CRL_BACKUP}..."
+    cp -f "${CRL_ACTIVE}" "${CRL_BACKUP}"
+fi
+
+# --- Deploy combined CRL ---
+log "Deploying combined CRL..."
+mv -f "${COMBINED_TMP}" "${CRL_ACTIVE}"
+restorecon "${CRL_ACTIVE}" 2>/dev/null || true
+
+# --- Validate nginx configuration, rollback on failure ---
 log "Validating nginx configuration..."
-nginx -t 2>/dev/null || {
-	log "ERROR: nginx -t failed after CRL update"
-	exit 1
-}
+if ! nginx -t 2>/dev/null; then
+    log "ERROR: nginx -t failed after CRL update — rolling back"
+    if [[ -f "${CRL_BACKUP}" ]]; then
+        mv -f "${CRL_BACKUP}" "${CRL_ACTIVE}"
+        log "Rolled back to previous CRL"
+    else
+        rm -f "${CRL_ACTIVE}"
+        log "No backup available — removed invalid CRL"
+    fi
+    logger -p auth.err "nginx-crl-update: nginx config test failed after CRL update, rolled back"
+    exit 1
+fi
 
 systemctl reload nginx
-logger -p auth.info "nginx-crl-update: CRL updated and nginx reloaded"
+logger -p auth.info "nginx-crl-update: Dual CRL (Intermediate + Root) updated and nginx reloaded"
 log "CRL update complete."
