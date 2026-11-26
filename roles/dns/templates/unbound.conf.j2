@@ -70,8 +70,6 @@ server:
 {% for domain in dns_private_domains %}
     private-domain: "{{ domain }}"
 {% endfor %}
-    # Allow .local queries for private domains (e.g. vault.local)
-    local-zone: "local." nodefault
 {% endif %}
 {% if dns_insecure_domains | length > 0 %}
 {% for domain in dns_insecure_domains %}

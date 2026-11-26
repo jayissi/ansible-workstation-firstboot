@@ -1,5 +1,6 @@
 ---
 verification_vault_addr: "https://127.0.0.1:8200"
+verification_vault_ca: "{{ vault_cert_dir | default('/etc/vault.d/certs') }}/root.crt"
 
 verification_masked_units:
   - bluetooth.service
@@ -7,5 +8,27 @@ verification_masked_units:
   - cups.service
   - cups.socket
   - cups.path
+  - cockpit.socket
 
 verification_disabled_units: []
+
+# ---------------------------------------------------------------------------
+# Outcome checks (tasks/outcomes.yml) -- expected values mirror the inventory
+# ---------------------------------------------------------------------------
+verification_expected_zone: FedoraWorkstation
+verification_vault_hostname: "{{ vault_local_hostname | default('vault.internal') }}"
+verification_dnssec_signed: isc.org
+verification_dnssec_bogus: dnssec-failed.org
+verification_csp_sink_port: "{{ proxy_csp_sink_port | default(8008) }}"
+verification_faillock_dir: "{{ auth_faillock_dir | default('/var/log/faillock') }}"
+verification_pwhistory_remember: "{{ auth_pwhistory_remember | default(24) }}"
+verification_shell_timeout: "{{ common_shell_timeout | default(3600) }}"
+verification_crypto_policy: "{{ crypto_policies_policy | default('DEFAULT') }}"
+verification_sandboxed_units:
+  - nginx
+  - unbound
+  - dnsconfd
+  - vault-agent
+# systemd-analyze security "Overall exposure" (0 = locked down, 10 = unsafe).
+# Reported as WARN above this value; tighten once a baseline is measured.
+verification_sandbox_max_exposure: 9.0

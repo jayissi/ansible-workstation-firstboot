@@ -1,0 +1,37 @@
+# {{ ansible_managed }}
+# Project-owned main nginx configuration (replaces Fedora's stock file).
+# Differences from the package default:
+#   * No default `listen 80` server block -- nothing listens on :80/[::]:80
+#     (review finding E-07). Every vhost lives in conf.d/ and is TLS-only.
+#   * error_log at "warn": "debug"/"info" would log request headers,
+#     including X-Vault-Token.
+user nginx;
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /run/nginx.pid;
+
+# Dynamic modules shipped by Fedora packages.
+include /usr/share/nginx/modules/*.conf;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent" "$http_x_forwarded_for"';
+    access_log /var/log/nginx/access.log main;
+
+    sendfile            on;
+    tcp_nopush          on;
+    keepalive_timeout   65;
+    types_hash_max_size 4096;
+
+    include             /etc/nginx/mime.types;
+    default_type        application/octet-stream;
+
+    # All server blocks (vault.internal, status, SSH gateway, default-deny,
+    # CSP sink) and the http-level hardening (00-hardening.conf).
+    include /etc/nginx/conf.d/*.conf;
+}

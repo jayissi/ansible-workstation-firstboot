@@ -19,3 +19,6 @@
 
 - name: Import services checks
   ansible.builtin.import_tasks: services.yml
+
+- name: Import outcome checks (controls effective, not just running)
+  ansible.builtin.import_tasks: outcomes.yml

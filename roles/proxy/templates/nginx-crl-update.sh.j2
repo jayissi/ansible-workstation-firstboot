@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
+# {{ ansible_managed }}
+# Hostname comes from proxy_server_name (canonical: vault_local_hostname,
+# ADR-0008) so the CRL fetch always matches the Vault certificate SAN.
 set -euo pipefail
 
-INT_CRL_URL="https://vault.local:8200/v1/pki_int/crl/pem"
-ROOT_CRL_URL="https://vault.local:8200/v1/pki/crl/pem"
+INT_CRL_URL="https://{{ proxy_server_name }}:8200/v1/pki_int/crl/pem"
+ROOT_CRL_URL="https://{{ proxy_server_name }}:8200/v1/pki/crl/pem"
 CACERT="/etc/vault.d/certs/root.crt"
-RESOLVE="--resolve vault.local:8200:127.0.0.1"
+RESOLVE="--resolve {{ proxy_server_name }}:8200:127.0.0.1"
 CRL_ACTIVE="/etc/nginx/certs/client-ca.crl"
 CRL_BACKUP="/etc/nginx/certs/client-ca.crl.bak"
 INT_CRL_TMP="$(mktemp /tmp/crl-int.XXXXXX)"

@@ -27,12 +27,49 @@ proxy_cache off;
 proxy_no_cache 1;
 proxy_cache_bypass 1;
 
-# Certificate fingerprint logging
-log_format vault_mtls
-    '$remote_addr - [$time_local] '
-    '"$request" $status $body_bytes_sent '
-    'cert_verify="$ssl_client_verify" '
-    'cert_dn="$ssl_client_s_dn" '
-    'cert_serial="$ssl_client_serial" '
-    'cert_fingerprint="$ssl_client_fingerprint" '
-    'upstream_time=$upstream_response_time';
+# Structured JSON access log (KNOWN_ISSUES P31) -- one JSON object per line
+# for SIEM parsing. $uri is used instead of $request so query strings (which
+# could carry tokens) are never logged. No request bodies, no auth headers.
+log_format vault_mtls_json escape=json
+    '{'
+    '"time":"$time_iso8601",'
+    '"remote_addr":"$remote_addr",'
+    '"host":"$host",'
+    '"method":"$request_method",'
+    '"uri":"$uri",'
+    '"status":$status,'
+    '"bytes_sent":$body_bytes_sent,'
+    '"ssl_protocol":"$ssl_protocol",'
+    '"ssl_cipher":"$ssl_cipher",'
+    '"cert_verify":"$ssl_client_verify",'
+    '"cert_dn":"$ssl_client_s_dn",'
+    '"cert_issuer":"$ssl_client_i_dn",'
+    '"cert_serial":"$ssl_client_serial",'
+    '"cert_fingerprint":"$ssl_client_fingerprint",'
+    '"upstream_time":"$upstream_response_time"'
+    '}';
+
+# CSP violation report log (P29): request body only (the browser's JSON
+# report), escaped. Reports contain page URLs, never secrets.
+log_format csp_report escape=json
+    '{"time":"$time_iso8601","remote_addr":"$remote_addr",'
+    '"user_agent":"$http_user_agent","report":"$request_body"}';
+
+# SSH gateway Host allow-list (KNOWN_ISSUES P28, adapted): the bastion
+# connects by IP, so it sends no SNI and always lands on the 8443 default
+# server -- a separate ssl_reject_handshake catch-all would break it and
+# skip the mTLS settings. Instead the gateway itself rejects any Host that
+# is neither the VM's address nor the gateway hostname (444).
+map $host $ssh_gw_host_ok {
+    default 0;
+    "{{ ansible_default_ipv4.address | default('127.0.0.1') }}" 1;
+    "{{ proxy_ssh_gateway_server_name }}" 1;
+}
+
+# SSH gateway client identity (KNOWN_ISSUES P26): only certificates with
+# the bastion OU may use the gateway, even though other certs from the same
+# Intermediate CA (VaultPass, Nginx proxy-client) pass TLS verification.
+map $ssl_client_s_dn $ssh_gw_client_ok {
+    default 0;
+    "~(^|,)OU={{ proxy_ssh_gateway_client_ou }}(,|$)" 1;
+}

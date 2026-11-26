@@ -25,7 +25,11 @@ Split configuration ownership as follows:
 
 **dnsconfd owns:**
 
-- DoT upstream servers (`static_servers` in `dnsconfd.conf`)
+- DoT upstream servers (`static_servers` in `/etc/dnsconfd.conf`, rendered
+  from `dns_dot_upstreams`). **Amendment 2026-11-25:** earlier releases
+  wrote `/etc/dnsconfd/dnsconfd.conf`, a path the package never reads, so
+  DoT was silently inactive (review finding E-03); the role now writes the
+  package's real path and removes the stale copy
 - `resolv.conf` management (symlink with correct `net_conf_t` SELinux
   context)
 - `tls-cert-bundle` (pushed into Unbound runtime config via

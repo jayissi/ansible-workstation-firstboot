@@ -1,17 +1,24 @@
 ---
 # ---------------------------------------------------------------------------
-# Nginx reverse proxy for Vault UI (https://vault.local)
+# Nginx reverse proxy for Vault UI (https://{{ vault_local_hostname }})
 # ---------------------------------------------------------------------------
 proxy_listen_address: '127.0.0.1'
 proxy_listen_port: 443
-proxy_server_name: vault.local
+# Derived from the canonical hostname variables (inventory, ADR-0008) so the
+# Nginx server_name / proxy_ssl_name can never drift from the cert SANs.
+proxy_server_name: "{{ vault_local_hostname | default('vault.internal') }}"
+proxy_status_server_name: "{{ vault_status_hostname | default('status.' ~ proxy_server_name) }}"
+proxy_ssh_gateway_server_name: "{{ vault_ssh_gateway_hostname | default('vault-ssh-gateway.internal') }}"
 
 proxy_backend_url: 'https://127.0.0.1:8202'
 proxy_vault_addr: 'https://127.0.0.1:8200'
+# Trust anchor for the proxy role's Vault API calls (KNOWN_ISSUES P24); the
+# vault role has written the production Root CA by the time this role runs.
+proxy_vault_ca: "{{ vault_cert_dir | default('/etc/vault.d/certs') }}/root.crt"
 proxy_vault_token: "{{ vault_root_token | default('') }}"
 proxy_leaf_ttl: '2160h'
 
-# Nginx has its OWN leaf cert (vault.local SAN only), separate from Vault's.
+# Nginx has its OWN leaf cert (proxy_server_name + status SANs), separate from Vault's.
 # Issued by the same Vault PKI Intermediate CA, auto-rotated by Vault Agent.
 proxy_tls_cert: /etc/nginx/certs/server-chain.crt
 proxy_tls_key: /etc/nginx/certs/server.key
@@ -28,3 +35,15 @@ proxy_tls_protocols: 'TLSv1.2 TLSv1.3'
 proxy_ssh_gateway_enabled: true
 proxy_ssh_gateway_listen_address: '0.0.0.0'
 proxy_ssh_gateway_port: 8443
+# Bastion mTLS (KNOWN_ISSUES P26): the gateway requires a client cert issued
+# by the Vault Intermediate CA with this OU (PKI role bastion-gateway-client).
+proxy_ssh_gateway_client_ou: "Bastion Gateway"
+# Controller-side (NOT on the workstation) location of the issued bastion
+# cert/key. Gitignored. Copy to the bastion's ~/.config/vault-bastion/.
+proxy_bastion_cert_dir: "{{ playbook_dir }}/../.bastion"
+
+# Loopback-only sink for CSP reports (KNOWN_ISSUES P29). 8008 is already
+# labelled http_port_t in the Fedora SELinux policy (httpd_t may bind it), so
+# no custom port label is needed. Not exposed by the
+# firewall; bound to 127.0.0.1 only.
+proxy_csp_sink_port: 8008

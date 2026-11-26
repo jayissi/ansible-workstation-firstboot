@@ -47,6 +47,12 @@
     - common
     - swap
 
+- name: Session controls (idle timeout, cron/at, screen lock, GDM banner)
+  ansible.builtin.include_tasks: session.yml
+  tags:
+    - common
+    - session
+
 - name: Configure system target and polkit
   ansible.builtin.include_tasks: system.yml
   tags:

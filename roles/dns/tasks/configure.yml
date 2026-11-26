@@ -81,13 +81,15 @@
 # ---------------------------------------------------------------------------
 # dnsconfd -- manages resolv.conf, DoT upstreams, and resolved D-Bus API
 # ---------------------------------------------------------------------------
-- name: Configure | Ensure dnsconfd config directory exists
+# The dnsconfd package reads /etc/dnsconfd.conf (rpm -ql dnsconfd). Earlier
+# releases of this role wrote /etc/dnsconfd/dnsconfd.conf, which dnsconfd
+# never read: DoT upstreams were silently ignored and Unbound forwarded in
+# plaintext to the DHCP-provided resolver (review finding E-03). Remove the
+# stale, misleading copy.
+- name: Configure | Remove stale dnsconfd config from the unread path
   ansible.builtin.file:
     path: /etc/dnsconfd
-    state: directory
-    owner: root
-    group: root
-    mode: '0755'
+    state: absent
 
 # Override dnsconfd's default module-config:
 #   ipsecmod removed -- requires libreswan which we don't install; SELinux
@@ -125,10 +127,10 @@
   notify: Restart unbound
   when: dns_rpz_enabled | default(false) | bool
 
-- name: Configure | Deploy dnsconfd configuration
+- name: Configure | Deploy dnsconfd configuration (DoT upstreams)
   ansible.builtin.template:
     src: dnsconfd.conf.j2
-    dest: /etc/dnsconfd/dnsconfd.conf
+    dest: "{{ dns_dnsconfd_config_file }}"
     owner: root
     group: root
     mode: '0644'
@@ -154,7 +156,7 @@
   ansible.builtin.lineinfile:
     path: /etc/nsswitch.conf
     regexp: '^hosts:'
-    line: 'hosts:      files mdns_minimal [NOTFOUND=return] myhostname dns'
+    line: "hosts:      {{ auth_nsswitch_hosts | default('files mdns_minimal [NOTFOUND=continue] myhostname dns') }}"
     backup: true
 
 # Remove stale resolv.conf symlink from previous deployment if present.
@@ -239,15 +241,64 @@
       {
         "ManagedBookmarks": [
           { "toplevel_name": "Managed" },
-          { "name": "Vault", "url": "https://vault.local/ui/vault/auth?with=cert" },
-          { "name": "Vault Status", "url": "https://status.vault.local" }
+          { "name": "Vault", "url": "https://{{ vault_local_hostname | default('vault.internal') }}/ui/vault/auth?with=cert" },
+          { "name": "Vault Status", "url": "https://{{ vault_status_hostname | default('status.vault.internal') }}" }
         ],
         "BookmarkBarEnabled": true,
         "AutoSelectCertificateForUrls": [
-          "{\"pattern\":\"https://vault.local\",\"filter\":{\"ISSUER\":{\"CN\":\"Local Lab Infrastructure Intermediate CA\"}}}",
-          "{\"pattern\":\"https://vault.local:8200\",\"filter\":{\"ISSUER\":{\"CN\":\"Local Lab Infrastructure Intermediate CA\"}}}"
+          "{\"pattern\":\"https://{{ __dns_vault_host }}\",\"filter\":{\"ISSUER\":{\"CN\":\"{{ __dns_int_ca_cn }}\"}}}",
+          "{\"pattern\":\"https://{{ __dns_vault_host }}:8200\",\"filter\":{\"ISSUER\":{\"CN\":\"{{ __dns_int_ca_cn }}\"}}}"
         ]
       }
     owner: root
     group: root
     mode: '0644'
+  vars:
+    __dns_vault_host: "{{ vault_local_hostname | default('vault.internal') }}"
+    # Issuer CN uses the same expression as pki_engine.yml's Intermediate CA
+    # common_name, so renaming the organization cannot silently break
+    # certificate auto-selection.
+    __dns_int_ca_cn: "{{ vault_pki_organization | default('Local Lab Infrastructure') }} Intermediate CA"
+
+# ---------------------------------------------------------------------------
+# systemd sandboxing drop-ins (KNOWN_ISSUES P23)
+# ---------------------------------------------------------------------------
+- name: Configure | Ensure systemd drop-in directories exist
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item }}.service.d"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - unbound
+    - dnsconfd
+
+# unbound: ProtectSystem=full makes /usr, /boot and /etc read-only; it only
+# writes /var/lib/unbound (root.key, RPZ zonefile), which stays writable.
+- name: Configure | Deploy unbound sandboxing drop-in
+  ansible.builtin.template:
+    src: service-hardening.conf.j2
+    dest: /etc/systemd/system/unbound.service.d/10-hardening.conf
+    owner: root
+    group: root
+    mode: '0644'
+  vars:
+    __dns_hardening_protect_system: full
+  notify:
+    - Reload dns systemd units
+    - Restart unbound
+
+# dnsconfd: no ProtectSystem -- it writes /etc/resolv.conf.
+- name: Configure | Deploy dnsconfd sandboxing drop-in
+  ansible.builtin.template:
+    src: service-hardening.conf.j2
+    dest: /etc/systemd/system/dnsconfd.service.d/10-hardening.conf
+    owner: root
+    group: root
+    mode: '0644'
+  vars:
+    __dns_hardening_protect_system: ""
+  notify:
+    - Reload dns systemd units
+    - Restart dnsconfd

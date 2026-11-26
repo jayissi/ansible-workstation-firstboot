@@ -8,6 +8,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `vault-browser-cert-sync` (+ `.path` on `client.crt`, 15-min `.timer`):
+  re-imports the Agent-renewed client certificate into Chrome and every
+  Firefox profile, so browser TLS-certificate login survives the 72h
+  renewal and Firefox profiles created after the deploy
+  (KNOWN_ISSUES #50); replaces the inline import that killed browsers and wiped
+  `~/.pki/nssdb` on every run
+- `make ci`: local dry run of the GitHub Actions lint workflow
+  (`lint/ci-local.sh`) -- lints a clean snapshot of what would be pushed
+  with fresh tool versions, no auto-fix, no bind mount;
+  `lint-all.sh --check` mode and an `ansible-playbook --syntax-check`
+  step
+- `make validate`: outcome-based post-deploy validation
+  (`roles/verification/tasks/outcomes.yml`), `make bastion-test`
+  (`tests/bastion-test.sh`) and `make idempotency`
+  (`tests/idempotency.sh`); security test T-01 (forged
+  `X-Client-Cert` sent directly to Vault 8200 must not yield a token)
+- SSH gateway bastion mutual TLS: PKI role `bastion-gateway-client`,
+  certificate issued to the controller's gitignored `.bastion/`,
+  `OU=Bastion Gateway` allow-list, CRL-checked (KNOWN_ISSUES P26)
+- SSH gateway `Host` allow-list closing unknown names with 444 (P28,
+  adapted), `POST`/`PUT`-only credential paths (P27)
+- Structured JSON access logs `vault_mtls_json` (P31); CSP
+  `report-uri /csp-report` with a loopback-only sink and JSON log (P29);
+  `Cache-Control: no-store` + `Pragma: no-cache` (P32)
+- firewalld `dot-egress` policy: outbound tcp/853 only to the approved
+  DoT upstreams (P16); `LogDenied=unicast`
+- Independent core `local-zone` blocklist (HaGeZi TIF mini) active
+  alongside RPZ, with de-duplication and an empty-download guard (P22)
+- systemd sandboxing drop-ins for nginx, unbound and dnsconfd; hardened
+  vault-agent unit (`CapabilityBoundingSet=CAP_IPC_LOCK` only, `LimitCORE=0`, `ProtectHome`) (P23)
+- AppRole `secret_id` lifecycle: 90-day TTL, loopback-bound, automatic
+  rotation below 30 days, `make vault-rotate-secret-id`
+- CIS session controls: `TMOUT` from `common_shell_timeout` (default
+  3600 s), cron/at allow-lists, GNOME screen lock + GDM banner; su
+  restricted to `wheel`; `pam_access` default-deny rules; pwhistory
+  `remember = 24` actually written
+- Audit watches on `/etc/pam.d`, `/etc/sssd`, `/etc/authselect`,
+  `/etc/firewalld`, `/etc/systemd/system`, `/etc/polkit-1`,
+  `/usr/local/bin`, `/etc/sysconfig`, `/etc/vault-agent.d`,
+  `/etc/crypto-policies`, `/etc/dnsconfd.conf`
+- ADR-0008 (`.internal` namespace);
+  `inventory/group_vars/all/vault.yml.example`
+
 - yamllint `brackets`/`braces: forbid: non-empty` — enforces
   block-style YAML sequences and mappings everywhere (Red Hat Ansible
   best practice), while still allowing bare `[]`/`{}` for empty
@@ -83,6 +126,75 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- GDM greeter ran a full GNOME desktop at boot without a password:
+  the new CIS session task created a partial `/etc/dconf/profile/gdm`
+  that shadowed the vendor profile (`greeter-dconf-defaults`); the
+  partial file is removed and a verification assertion guards it
+  (KNOWN_ISSUES #49)
+- Post-reboot sweep (KNOWN_ISSUES #41-#48): `logrotate-vault` SELinux
+  module was never compiled/loaded, so Vault audit-log rotation always
+  failed (module 1.1 built by the vault policy handler); Vault's
+  implicit 8203 cluster listener (port+1 of 8202) was denied bind
+  (`vault_selinux_ports` labeled via `community.general.seport`);
+  tmpfiles `e` never removed Agent cert/key bundles at boot (now `r`)
+- `DEFAULT:NO-SHA1` rejected Microsoft's SHA-1-bound VS Code repo key
+  and left SSH SHA-1 MACs enabled; replaced by custom
+  `DEFAULT:NO-SHA1-MAC`, with a verification assertion for SSH MACs
+- New USBGuard/logind/GDM AVC variants (`logind-usbguard` 1.2.0,
+  `usbguard-gdm` 1.1.0) and `staff_t` systemd --user setattr noise
+  (`staff-systemd-user` 1.0.0); `dontaudit` for the Vault Agent split
+  scripts' awk `isatty()` ioctl probe (`vault.te` 1.5.0)
+- Verification AVC check always reported 0: `ausearch` read Ansible's
+  stdin pipe instead of the audit logs (now `--input-logs`, plus a
+  per-denial summary); the Phase 0 `/root/.ansible/tmp` fix ran plain
+  `sudo` (staff_t) and was silently denied (now sysadm_r when confined)
+- pre-commit: codespell hook passed `--config pyproject.toml` (INI
+  parser, broke on multi-line TOML arrays) -> `--toml`; `hadolint-docker`
+  hook needed the docker CLI and ignored `lint/.hadolint.yaml` -> system
+  `hadolint --config lint/.hadolint.yaml`, same as CI
+- `lint/.secrets.baseline` stamped `1.5.55` by an unpinned
+  `detect-secrets scan` made the pinned v1.5.0 hook rewrite it on every
+  commit; normalized to the hook version and stale entries pruned
+- Hardened firewall zone was never bound to the interface (stayed in
+  `public`, SSH open to any source): zone now bound and default, stock
+  `ssh` service removed so only the bastion rich rule admits SSH
+- DNS-over-TLS was never active: the role wrote
+  `/etc/dnsconfd/dnsconfd.conf`, but dnsconfd reads `/etc/dnsconfd.conf`
+- Vault port 8200 trusted forwarded client-certificate headers from any
+  local process (cert-auth login without the private key); header trust
+  now exists only on the mTLS-protected 8202 listener
+- SSH gateway passed client-supplied `X-Client-Cert` / `X-Forwarded-For`
+  to Vault; now stripped/overwritten
+- CRL refresh raced Vault unseal at boot and left an expired CRL;
+  unit now ordered after `vault-unseal.service` with a bounded health wait
+- `nginx -t` failed under the confined admin (`sysadm_t`) because of the
+  stock `listen 80` server; project-owned `nginx.conf` (no :80) and
+  validation via `systemd-run` in nginx's own domain
+- Audit watch pointed at `/var/run/faillock` while faillock writes to
+  `/var/log/faillock`
+- Fresh installs: Vault started with the HashiCorp RPM's default
+  `vault.hcl`; auditd failed on a not-yet-created watched directory
+- dnsconfd crashed once its config was actually read: `syslog_log` takes
+  a destination string, not `yes` (now `journal_log: yes`)
+- `NoNewPrivileges` in the nginx/unbound/dnsconfd drop-ins blocked their
+  SELinux domain transitions (no `nnp_transition` in the Fedora policy);
+  removed from those drop-ins
+- dns role could not repair a broken resolver: root hints are now only
+  downloaded when missing (the timer refreshes them)
+- AppRole `secret_id_ttl` was capped at 32 days by the mount's default max
+  lease TTL; the `approle` mount is now tuned to the intended lifetime
+- Vault API TLS validation follows the certificate Vault is actually
+  serving (bootstrap, Agent-issued, production) via an on-disk trust
+  bundle of CA certificates (`_api_trust.yml`)
+- vault-agent could not start with an empty `CapabilityBoundingSet`
+  (`/usr/bin/vault` carries the file capability `cap_ipc_lock+ep`)
+- Core blocklist download returned 403 (jsDelivr hosts path); now the
+  GitHub domains-only feed, the update script accepts both hosts and
+  domains-only formats, and a header-only list is re-fetched
+- `make security-test` ran as root in the confined `staff_t` domain on
+  hardened hosts and could not read certificates or logs; it now
+  transitions to `sysadm_t`
+
 - Lint container venv-shadowing bug: `make lint`'s auto-fix step
   bind-mounts the host checkout onto `/workspace`, which silently
   replaced the image's lint-toolchain venv with the host's own
@@ -119,6 +231,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   directive
 
 ### Changed
+
+- Service hostnames `vault.local` / `status.vault.local` /
+  `vault-ssh-gateway.local` → `.internal` (ADR-0008, KNOWN_ISSUES P14),
+  defined once in the inventory; CRL update script is now a template
+- Every Vault API call validates TLS (`ca_path`: bootstrap certificate,
+  then production Root CA) instead of `validate_certs: false` (P24)
+- DoT upstreams from `dns_dot_upstreams`; Google removed (P15); QNAME
+  minimisation off in forwarder mode (P19); nsswitch
+  `[NOTFOUND=continue]` from one shared variable (P21); explicit
+  local-data TTL (P12); inbound 853 rule and no-op loopback rules removed
+  (P10)
+- Crypto policy `DEFAULT:NO-SHA1-MAC` (custom sub-policy: no SHA-1
+  MACs); NTS-only time sources with
+  `authselectmode require`; kexec disabled; IPv6 RA/redirects ignored;
+  cockpit.socket masked; SSH `AllowAgentForwarding no`
+- vault-ssh-helper pinned to the Vault Root CA and the `daily` role
+- Chrome certificate auto-select issuer derived from
+  `vault_pki_organization`
 
 - Refactored lint infrastructure: extracted the 18-tool lint chain
   from the Containerfile's inline CMD into `lint/lint-all.sh` (single

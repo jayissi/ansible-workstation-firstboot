@@ -60,7 +60,7 @@
       alt_names: "localhost,{{ vault_local_hostname }},{{ ansible_hostname }}"
       ip_sans: "127.0.0.1"
       ttl: "{{ vault_pki_leaf_ttl }}"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
   register: vault_leaf_cert
@@ -87,6 +87,13 @@
     mode: "0444"
   when: vault_existing_cert_check.rc != 0 or not vault_root_ca_exists.stat.exists
 
+# Writing server-chain.crt triggers vault-cert-reload.path (ADR-0003), which
+# reloads Vault onto the new chain immediately -- the next API call already
+# meets the production certificate. Rebuild the trust bundle now so it holds
+# both the previous certificate and the new chain (leaf + Intermediate CA).
+- name: Tls Production | Refresh API trust bundle with the new server chain
+  ansible.builtin.include_tasks: _api_trust.yml
+
 # Fetch Root CA and Intermediate CA certs directly from the PKI mounts
 # rather than extracting from ca_chain (which can be empty on some Vault
 # versions). These mounts always serve their CA certs at /ca/pem.
@@ -94,7 +101,7 @@
   ansible.builtin.uri:
     url: "{{ vault_addr }}/v1/pki/ca/pem"
     return_content: true
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
   register: vault_root_ca_pem
@@ -113,7 +120,7 @@
   ansible.builtin.uri:
     url: "{{ vault_addr }}/v1/pki_int/ca/pem"
     return_content: true
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
   register: vault_int_ca_pem
@@ -171,10 +178,15 @@
         state: restarted
         daemon_reload: true
 
+    # Vault now serves the production chain and root.crt exists: rebuild
+    # the trust bundle so it includes the production Root CA.
+    - name: Tls Production | Refresh API trust bundle with the production Root CA
+      ansible.builtin.include_tasks: _api_trust.yml
+
     - name: Tls Production | Wait for Vault process after restart
       ansible.builtin.uri:
         url: "{{ vault_addr }}/v1/sys/health"
-        validate_certs: false
+        ca_path: "{{ _vault_ca_path }}"
         status_code:
           - 200
           - 429
@@ -196,7 +208,7 @@
     - name: Tls Production | Verify Vault is unsealed with production cert
       ansible.builtin.uri:
         url: "{{ vault_addr }}/v1/sys/health"
-        validate_certs: false
+        ca_path: "{{ _vault_ca_path }}"
         status_code:
           - 200
       register: vault_final_health

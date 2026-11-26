@@ -68,7 +68,7 @@
     method: GET
     headers:
       X-Vault-Token: "{{ _vault_token_raw | default('') }}"
-    validate_certs: false
+    ca_path: "{{ verification_vault_ca }}"
     status_code:
       - 200
       - 400
@@ -102,7 +102,7 @@
 - name: Services | Check Vault health
   ansible.builtin.uri:
     url: "{{ verification_vault_addr }}/v1/sys/health"
-    validate_certs: false
+    ca_path: "{{ verification_vault_ca }}"
     status_code:
       - 200
       - 429

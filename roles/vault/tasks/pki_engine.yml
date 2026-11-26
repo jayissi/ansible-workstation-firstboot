@@ -16,7 +16,7 @@
     method: GET
     headers:
       X-Vault-Token: "{{ _vault_token }}"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
   register: vault_audit_devices
@@ -34,7 +34,7 @@
         file_path: "{{ vault_log_dir }}/audit.log"
         log_raw: "false"
         hmac_accessor: "true"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
@@ -53,7 +53,7 @@
         facility: "AUTH"
         tag: "vault-audit"
         log_raw: "false"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
@@ -68,7 +68,7 @@
     method: GET
     headers:
       X-Vault-Token: "{{ _vault_token }}"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
   register: vault_mounts
@@ -87,7 +87,7 @@
       type: pki
       config:
         max_lease_ttl: "{{ vault_pki_root_ttl }}"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
@@ -119,7 +119,7 @@
       province: "{{ vault_pki_province }}"
       country: "{{ vault_pki_country }}"
       ttl: "{{ vault_pki_root_ttl }}"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
   when: "'pki/' not in vault_mounts.json"
@@ -138,7 +138,7 @@
       type: pki
       config:
         max_lease_ttl: "{{ vault_pki_intermediate_ttl }}"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
@@ -164,7 +164,7 @@
       locality: "{{ vault_pki_locality }}"
       province: "{{ vault_pki_province }}"
       country: "{{ vault_pki_country }}"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
   register: vault_pki_int_csr
@@ -181,7 +181,7 @@
       csr: "{{ vault_pki_int_csr.json.data.csr }}"
       format: pem_bundle
       ttl: "{{ vault_pki_intermediate_ttl }}"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
   register: vault_pki_int_signed
@@ -196,11 +196,30 @@
     body_format: json
     body:
       certificate: "{{ vault_pki_int_signed.json.data.certificate }}"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
   when: "'pki_int/' not in vault_mounts.json"
+
+# Put the Intermediate CA on disk the moment it exists, BEFORE Vault Agent
+# can issue a server certificate from it and reload Vault. The API trust
+# bundle then validates the Agent-issued chain no matter when the Agent
+# swaps it in (partial-chain verification; see _api_trust.yml).
+# tls_production.yml later rewrites the same file from pki_int/ca/pem.
+- name: Pki Engine | Save Intermediate CA certificate early (API trust)
+  ansible.builtin.copy:
+    content: "{{ vault_pki_int_signed.json.data.certificate }}\n"
+    dest: "{{ vault_cert_dir }}/intermediate.crt"
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: "0444"
+  when:
+    - vault_pki_int_signed is not skipped
+    - vault_pki_int_signed.json is defined
+
+- name: Pki Engine | Refresh Vault API TLS trust bundle with the Intermediate CA
+  ansible.builtin.include_tasks: _api_trust.yml
 
 - name: Pki Engine | Create PKI role for Vault server certificates
   ansible.builtin.uri:
@@ -212,7 +231,7 @@
     # CN is a descriptive identifier ("HashiCorp Vault"), not a hostname.
     # allow_any_name + enforce_hostnames=false let Vault accept it.
     # Actual hostname validation happens via SANs in the cert request
-    # (alt_names: localhost, vault.local, ...), not the CN field --
+    # (alt_names: localhost, vault.internal, ...), not the CN field --
     # modern TLS (RFC 6125) uses SANs exclusively for hostname matching.
     body:
       allowed_domains:
@@ -238,7 +257,7 @@
       server_flag: true
       client_flag: false
       generate_lease: true
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
@@ -273,7 +292,7 @@
       server_flag: true
       client_flag: false
       generate_lease: true
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
@@ -311,7 +330,50 @@
       max_ttl: "{{ vault_pki_leaf_max_ttl }}"
       require_cn: true
       generate_lease: true
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
+    status_code:
+      - 200
+      - 204
+
+# Bastion -> SSH gateway mutual TLS (KNOWN_ISSUES P26). The gateway accepts
+# only certificates carrying this OU (nginx map $ssh_gw_client_ok). The cert
+# is stored (no_store: false) so it can be revoked by serial and lands on
+# the CRL the gateway checks.
+- name: Pki Engine | Create PKI role for bastion gateway client certificates
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/pki_int/roles/bastion-gateway-client"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      allowed_domains:
+        - "{{ vault_pki_bastion_cn }}"
+      allow_any_name: false
+      enforce_hostnames: false
+      allow_subdomains: false
+      allow_bare_domains: true
+      allow_localhost: false
+      allow_ip_sans: false
+      key_type: "{{ vault_pki_key_type }}"
+      key_bits: "{{ vault_pki_key_bits }}"
+      organization: "{{ vault_pki_organization }}"
+      ou: "{{ vault_pki_bastion_ou }}"
+      locality: "{{ vault_pki_locality }}"
+      province: "{{ vault_pki_province }}"
+      country: "{{ vault_pki_country }}"
+      key_usage:
+        - DigitalSignature
+      ext_key_usage:
+        - ClientAuth
+      server_flag: false
+      client_flag: true
+      ttl: "{{ vault_pki_bastion_ttl }}"
+      max_ttl: "{{ vault_pki_bastion_ttl }}"
+      require_cn: true
+      generate_lease: false
+      no_store: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
@@ -353,7 +415,7 @@
       # a cert that was still within its 72h TTL.
       generate_lease: false
       no_store: true
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
@@ -372,7 +434,7 @@
       type: kv
       options:
         version: "2"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
@@ -387,7 +449,7 @@
     method: GET
     headers:
       X-Vault-Token: "{{ _vault_token }}"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
   register: vault_auth_methods
@@ -410,7 +472,7 @@
         path "pki_int/issue/nginx-proxy-client" {
           capabilities = ["create", "update"]
         }
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
@@ -430,7 +492,7 @@
         path "ssh-ca/sign/breakglass" {
           capabilities = ["create", "update"]
         }
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
@@ -447,7 +509,7 @@
         body_format: json
         body:
           type: approle
-        validate_certs: false
+        ca_path: "{{ _vault_ca_path }}"
         status_code:
           - 200
           - 204
@@ -465,8 +527,12 @@
             - vault-agent-auth
           token_ttl: "1h"
           token_max_ttl: "4h"
-          secret_id_ttl: "0"
-        validate_certs: false
+          secret_id_ttl: "{{ vault_approle_secret_id_ttl }}"
+          secret_id_bound_cidrs:
+            - "127.0.0.1/32"
+          token_bound_cidrs:
+            - "127.0.0.1/32"
+        ca_path: "{{ _vault_ca_path }}"
         status_code:
           - 200
           - 204
@@ -477,7 +543,7 @@
         method: GET
         headers:
           X-Vault-Token: "{{ _vault_token }}"
-        validate_certs: false
+        ca_path: "{{ _vault_ca_path }}"
         status_code:
           - 200
       register: vault_approle_role_id_resp
@@ -497,7 +563,7 @@
         method: POST
         headers:
           X-Vault-Token: "{{ _vault_token }}"
-        validate_certs: false
+        ca_path: "{{ _vault_ca_path }}"
         status_code:
           - 200
       register: vault_approle_secret_id_resp
@@ -521,6 +587,159 @@
         mode: "0400"
 
 # ------------------------------------------------------------------
+# AppRole secret_id lifecycle (backlog "AppRole secret_id Rotation")
+# ------------------------------------------------------------------
+# The secret_id now has a bounded TTL and is bound to loopback. It is
+# rotated when less than vault_approle_secret_id_rotate_before remains,
+# when it never expires (legacy secret_id_ttl=0), or on demand
+# (make vault-rotate-secret-id). Rotation restarts vault-agent because the
+# agent keeps the secret_id it read at start-up in memory.
+# The approle mount's max lease TTL (Vault default 768h = 32 days) silently
+# caps secret_id_ttl. Raise it to the intended secret_id lifetime so a
+# 90-day secret_id is not clamped to 32 days (which would trigger rotation
+# every couple of days). Confirmed on testfedora 2026-11-25.
+- name: Pki Engine | Tune AppRole mount max TTL to the secret_id lifetime
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/auth/approle/tune"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      max_lease_ttl: "{{ vault_approle_secret_id_ttl }}"
+    ca_path: "{{ _vault_ca_path }}"
+    status_code:
+      - 200
+      - 204
+  changed_when: false
+
+- name: Pki Engine | Reconcile AppRole role settings (bounded secret_id TTL, loopback-bound)
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/auth/approle/role/vault-agent"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      token_policies:
+        - vault-agent-tls
+        - vault-agent-auth
+      token_ttl: "1h"
+      token_max_ttl: "4h"
+      secret_id_ttl: "{{ vault_approle_secret_id_ttl }}"
+      secret_id_bound_cidrs:
+        - "127.0.0.1/32"
+      token_bound_cidrs:
+        - "127.0.0.1/32"
+    ca_path: "{{ _vault_ca_path }}"
+    status_code:
+      - 200
+      - 204
+  changed_when: false
+
+- name: Pki Engine | List AppRole secret_id accessors
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/auth/approle/role/vault-agent/secret-id"
+    method: LIST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    ca_path: "{{ _vault_ca_path }}"
+    status_code:
+      - 200
+      - 404
+  register: __vault_approle_accessors
+  no_log: true
+
+- name: Pki Engine | Look up current secret_id expiry
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/auth/approle/role/vault-agent/secret-id-accessor/lookup"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      secret_id_accessor: "{{ item }}"
+    ca_path: "{{ _vault_ca_path }}"
+    status_code:
+      - 200
+  loop: "{{ __vault_approle_accessors.json.data['keys'] | default([]) }}"
+  register: __vault_approle_lookups
+  no_log: true
+
+# Seconds until the LATEST-expiring secret_id expires. A non-expiring
+# legacy secret_id reports expiration_time 0001-01-01 (large negative
+# epoch), so it is rotated once to a bounded TTL. No accessors -> -1.
+- name: Pki Engine | Compute remaining AppRole secret_id lifetime
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      now=$(date +%s)
+      best=-1
+      for t in {{ __vault_approle_lookups.results | default([])
+                  | map(attribute='json.data.expiration_time')
+                  | map('quote') | join(' ') }}; do
+        e=$(date -d "$t" +%s 2>/dev/null || echo -1)
+        if [ "$e" -gt "$best" ]; then best=$e; fi
+      done
+      echo $(( best - now ))
+  register: __vault_approle_remaining
+  changed_when: false
+
+- name: Pki Engine | Decide whether to rotate the AppRole secret_id
+  ansible.builtin.set_fact:
+    __vault_approle_rotate: >-
+      {{ (vault_approle_force_rotate | bool)
+         or (__vault_approle_remaining.stdout | int < vault_approle_secret_id_rotate_before_seconds | int) }}
+
+- name: Pki Engine | Rotate AppRole secret_id
+  when: __vault_approle_rotate | bool
+  block:
+    - name: Pki Engine | Generate replacement AppRole secret_id
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/auth/approle/role/vault-agent/secret-id"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ _vault_token }}"
+        ca_path: "{{ _vault_ca_path }}"
+        status_code:
+          - 200
+      register: __vault_approle_new_secret
+      no_log: true
+
+    - name: Pki Engine | Age-encrypt replacement secret_id (atomic replace)
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          umask 077
+          printf '%s' '{{ __vault_approle_new_secret.json.data.secret_id }}' | \
+            age -e -R "{{ vault_age_recipients_file }}" \
+            -o /root/vault-approle-secret.age.new
+          chmod 0400 /root/vault-approle-secret.age.new
+          mv -f /root/vault-approle-secret.age.new /root/vault-approle-secret.age
+      changed_when: true
+      no_log: true
+      notify: Restart vault-agent
+
+    - name: Pki Engine | Destroy superseded secret_id accessors
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/auth/approle/role/vault-agent/secret-id-accessor/destroy"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ _vault_token }}"
+        body_format: json
+        body:
+          secret_id_accessor: "{{ item }}"
+        ca_path: "{{ _vault_ca_path }}"
+        status_code:
+          - 200
+          - 204
+      loop: >-
+        {{ __vault_approle_accessors.json.data['keys'] | default([])
+           | reject('equalto', __vault_approle_new_secret.json.data.secret_id_accessor) | list }}
+      changed_when: true
+      no_log: true
+
+# ------------------------------------------------------------------
 # GRUB password hash (only generate if not already stored)
 # ------------------------------------------------------------------
 - name: Pki Engine | Check if GRUB hash already exists in Vault
@@ -529,7 +748,7 @@
     method: GET
     headers:
       X-Vault-Token: "{{ _vault_token }}"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 404
@@ -569,7 +788,7 @@
         body:
           data:
             password_hash: "{{ vault_grub_password_hash }}"
-        validate_certs: false
+        ca_path: "{{ _vault_ca_path }}"
         status_code:
           - 200
           - 204
@@ -606,7 +825,7 @@
         path "auth/token/renew-self" { capabilities = ["update"] }
         path "sys/health" { capabilities = ["read"] }
         path "sys/mounts" { capabilities = ["read"] }
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
@@ -623,7 +842,7 @@
         path "secret/data/*" { capabilities = ["read","list"] }
         path "pki_int/certs/*" { capabilities = ["read","list"] }
         path "sys/health" { capabilities = ["read"] }
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
@@ -642,7 +861,7 @@
       ttl: "0"
       no_parent: true
       renewable: true
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
   register: vault_admin_token_resp
@@ -662,7 +881,7 @@
       ttl: "0"
       no_parent: true
       renewable: true
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
   register: vault_readonly_token_resp

@@ -1,6 +1,6 @@
 ---
 # roles/proxy/tasks/main.yml
-# Nginx reverse proxy for Vault UI at https://vault.local
+# Nginx reverse proxy for Vault UI at https://<vault_local_hostname>
 
 - name: Load OS-specific variables
   ansible.builtin.include_vars: '{{ item }}'
@@ -26,6 +26,13 @@
   tags:
     - proxy
     - proxy:configure
+
+- name: Import bastion client certificate tasks (SSH gateway mTLS)
+  ansible.builtin.import_tasks: bastion_cert.yml
+  when: proxy_ssh_gateway_enabled | bool
+  tags:
+    - proxy
+    - proxy:bastion
 
 - name: Import service tasks
   ansible.builtin.import_tasks: service.yml

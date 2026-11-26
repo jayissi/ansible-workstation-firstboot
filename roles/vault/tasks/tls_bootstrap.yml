@@ -52,3 +52,17 @@
   ansible.builtin.file:
     path: "{{ vault_cert_dir }}/bootstrap.csr"
     state: absent
+
+# Keep a stable copy of the self-signed bootstrap cert as the TLS trust
+# anchor for Ansible's API calls until Vault serves the production chain
+# (KNOWN_ISSUES P24). tls_production.yml overwrites vault_tls_cert_file
+# with the production chain BEFORE restarting Vault, so the live file
+# cannot be used as the anchor during that window.
+- name: Tls Bootstrap | Save bootstrap certificate as interim trust anchor
+  ansible.builtin.copy:
+    src: "{{ vault_tls_cert_file }}"
+    dest: "{{ vault_cert_dir }}/bootstrap-ca.crt"
+    remote_src: true
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: "0444"

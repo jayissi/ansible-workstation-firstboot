@@ -22,11 +22,17 @@
     # created during the previous (unconfined_u) run has admin_home_t
     # context which sysadm_t can't write to. This raw task fixes it
     # before Gathering Facts needs the dir. Idempotent on every run.
+    # Plain `sudo` from a staff_u login stays in staff_t, which cannot
+    # chmod/relabel admin_home_t (silently failed behind `|| true`;
+    # KNOWN_ISSUES #48). Use the sysadm_r role when confined, exactly as
+    # the Makefile's security-test target does.
     - name: Ensure ansible remote tmp is accessible
       ansible.builtin.raw: >-
-        sudo mkdir -p /root/.ansible/tmp &&
-        sudo chmod 700 /root/.ansible/tmp &&
-        sudo restorecon -F /root/.ansible/tmp 2>/dev/null || true
+        if id -Z 2>/dev/null | grep -q ':staff_r:'; then
+        S='sudo -n -r sysadm_r -t sysadm_t'; else S='sudo -n'; fi;
+        $S mkdir -p /root/.ansible/tmp &&
+        $S chmod 700 /root/.ansible/tmp &&
+        $S restorecon -F /root/.ansible/tmp 2>/dev/null || true
       become: false
       changed_when: false
       tags: always
@@ -90,7 +96,8 @@
     - name: Wait for Vault to be responsive before proceeding
       ansible.builtin.uri:
         url: "{{ vault_addr }}/v1/sys/health"
-        validate_certs: false
+        # Phase 2 runs after the vault role: the production Root CA exists (P24).
+        ca_path: "{{ vault_cert_dir | default('/etc/vault.d/certs') }}/root.crt"
         status_code:
           - 200
           - 429
@@ -193,7 +200,8 @@
         method: GET
         headers:
           X-Vault-Token: "{{ _vault_token_raw }}"
-        validate_certs: false
+        # Phase 2 runs after the vault role: the production Root CA exists (P24).
+        ca_path: "{{ vault_cert_dir | default('/etc/vault.d/certs') }}/root.crt"
         status_code:
           - 200
       register: _grub_kv
@@ -210,15 +218,16 @@
       tags:
         - always
 
+    # Loopback 8200-8202 rules were removed: firewalld accepts all "lo"
+    # traffic before zone rules, so they never restricted anything.
+    # The inbound 853 accept was removed (KNOWN_ISSUES P10): Unbound and
+    # dnsconfd only make OUTBOUND DoT connections, and outbound DoT is
+    # pinned to the approved upstreams by the dot-egress policy (P16).
     - name: Build SSH firewall rich rules from allowed sources
       ansible.builtin.set_fact:
         firewall_rich_rules: >-
           {{
-            ['rule family="ipv4" source address="127.0.0.1" port port="8200" protocol="tcp" accept',
-             'rule family="ipv4" source address="127.0.0.1" port port="8201" protocol="tcp" accept',
-             'rule family="ipv4" source address="127.0.0.1" port port="8202" protocol="tcp" accept',
-             'rule family="ipv4" port port="853" protocol="tcp" accept',
-             'rule family="ipv4" destination NOT address="127.0.0.1" port port="53" protocol="udp" drop',
+            ['rule family="ipv4" destination NOT address="127.0.0.1" port port="53" protocol="udp" drop',
              'rule family="ipv4" destination NOT address="127.0.0.1" port port="53" protocol="tcp" drop',
              'rule family="ipv4" source address="' ~ bastion_ip ~ '" port port="8443" protocol="tcp" accept']
             + (ssh_allowed_sources
@@ -232,6 +241,41 @@
           }}
       tags:
         - always
+
+    - name: Build DoT egress rules from the approved upstreams (P16)
+      ansible.builtin.set_fact:
+        firewall_dot_egress_rules: >-
+          {{
+            (dns_dot_upstreams
+             | map(attribute='address')
+             | map('regex_replace', '^(.+)$',
+                   'rule priority="-10" family="ipv4" destination address="\1" port port="853" protocol="tcp" accept')
+             | list)
+            + ['rule priority="10" family="ipv4" port port="853" protocol="tcp" reject',
+               'rule priority="10" family="ipv6" port port="853" protocol="tcp" reject']
+          }}
+      tags:
+        - always
+
+    # Custom crypto sub-policy used by crypto_policies_policy
+    # (DEFAULT:NO-SHA1-MAC). Must exist before the crypto_policies role
+    # validates the policy name. Drops only SHA-1 MACs (hmac-sha1 in
+    # SSH/TLS); the stock NO-SHA1 also rejects SHA-1 key binding
+    # signatures and broke the VS Code repo key (KNOWN_ISSUES).
+    - name: Install custom crypto sub-policy NO-SHA1-MAC
+      ansible.builtin.copy:
+        dest: /etc/crypto-policies/policies/modules/NO-SHA1-MAC.pmod
+        content: |
+          # Managed by Ansible (playbooks/site.yml).
+          # Remove SHA-1 MACs only; SHA-1 signature checks stay as in
+          # DEFAULT so vendor RPM keys with SHA-1 bindings still verify.
+          mac = -HMAC-SHA1
+        owner: root
+        group: root
+        mode: "0644"
+      tags:
+        - crypto
+        - harden
 
     - name: Set THP for physical hosts only
       ansible.builtin.set_fact:
@@ -374,6 +418,27 @@
         - harden
 
   post_tasks:
+    # Log dropped/rejected packets so blocked probes are visible (review
+    # finding E-01). The firewall role's firewalld_conf does not support
+    # LogDenied, so set it with firewall-cmd (persists in firewalld.conf).
+    - name: Check firewalld LogDenied setting
+      ansible.builtin.command:
+        cmd: firewall-cmd --get-log-denied
+      register: __site_log_denied
+      changed_when: false
+      tags:
+        - firewall
+        - harden
+
+    - name: Log denied unicast packets (firewalld LogDenied=unicast)
+      ansible.builtin.command:
+        cmd: firewall-cmd --set-log-denied=unicast
+      when: __site_log_denied.stdout | trim != 'unicast'
+      changed_when: true
+      tags:
+        - firewall
+        - harden
+
     # -----------------------------------------------------------------
     # Fapolicyd cache tuning (must run AFTER linux-system-roles.fapolicyd
     # which overwrites fapolicyd.conf from its own template).
@@ -494,6 +559,39 @@
   hosts: workstation
   become: true
   pre_tasks:
+    # First browser client-cert sync (KNOWN_ISSUES #50). Runs here, after
+    # Phase 2's fapolicyd role trusted the script; later renewals are
+    # handled by vault-browser-cert-sync.path/.timer without Ansible.
+    - name: Check for the browser client-cert sync service
+      ansible.builtin.stat:
+        path: /etc/systemd/system/vault-browser-cert-sync.service
+      register: _browser_cert_sync_unit
+      tags:
+        - vault
+        - finalize
+
+    - name: Sync the Vault client certificate into browser NSS databases
+      ansible.builtin.systemd_service:
+        name: vault-browser-cert-sync.service
+        state: started
+      when: _browser_cert_sync_unit.stat.exists
+      changed_when: false
+      failed_when: false
+      tags:
+        - vault
+        - finalize
+
+    - name: Read browser client-cert sync result
+      ansible.builtin.command:
+        cmd: cat /run/vault-browser-cert-sync.status
+      register: _browser_cert_sync_status
+      when: _browser_cert_sync_unit.stat.exists
+      changed_when: "'imported=0 ' not in _browser_cert_sync_status.stdout"
+      failed_when: "'failed=0' not in _browser_cert_sync_status.stdout"
+      tags:
+        - vault
+        - finalize
+
     # aide_init: true is only safe to run ONCE (first-ever bootstrap).
     # Running "aide --init" unconditionally on every deploy silently
     # overwrites the integrity baseline with whatever the filesystem

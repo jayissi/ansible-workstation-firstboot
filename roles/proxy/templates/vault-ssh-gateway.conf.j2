@@ -4,21 +4,45 @@
 # are exposed, nothing else. See docs/decisions/ADR-0006.
 
 server {
-    listen {{ proxy_ssh_gateway_listen_address }}:{{ proxy_ssh_gateway_port }} ssl;
-    server_name vault-ssh-gateway.local;
+    # default_server: the bastion connects by IP (no SNI), so it always
+    # lands here -- mTLS below is therefore always enforced on 8443.
+    listen {{ proxy_ssh_gateway_listen_address }}:{{ proxy_ssh_gateway_port }} ssl default_server;
+    server_name {{ proxy_ssh_gateway_server_name }} {{ ansible_default_ipv4.address | default('127.0.0.1') }};
 
     ssl_certificate     {{ proxy_tls_cert }};
     ssl_certificate_key {{ proxy_tls_key }};
     ssl_protocols       {{ proxy_tls_protocols }};
 
+    # Bastion mutual TLS (KNOWN_ISSUES P26): a client certificate from the
+    # Vault Intermediate CA is REQUIRED, revocation is checked against the
+    # same CRL as vault.internal, and only the bastion OU is accepted.
+    ssl_client_certificate {{ proxy_tls_client_ca }};
+    ssl_verify_client      on;
+    ssl_verify_depth       2;
+    ssl_crl                /etc/nginx/certs/client-ca.crl;
+
     include {{ __proxy_conf_d_dir }}/security-headers.inc;
 
-    access_log /var/log/nginx/ssh-gateway-access.log vault_mtls;
+    access_log /var/log/nginx/ssh-gateway-access.log vault_mtls_json;
 
     limit_req zone=vault_auth burst=5 nodelay;
     limit_conn per_ip 5;
 
+    # Unknown Host header -> close connection (KNOWN_ISSUES P28, adapted).
+    if ($ssh_gw_host_ok = 0) {
+        return 444;
+    }
+    # Valid CA but not a bastion certificate -> forbidden.
+    if ($ssh_gw_client_ok = 0) {
+        return 403;
+    }
+
     location /v1/ssh-otp/creds/ {
+        # Credential issuance is a write: the Vault CLI sends PUT, the API
+        # also accepts POST. Everything else is refused (KNOWN_ISSUES P27).
+        limit_except POST PUT {
+            deny all;
+        }
         proxy_pass {{ proxy_backend_url }};
         proxy_ssl_verify on;
         proxy_ssl_trusted_certificate {{ proxy_tls_ca }};
@@ -29,12 +53,20 @@ server {
         # proxy_backend_url host (127.0.0.1), which isn't a SAN on Vault's
         # cert (issued for vault_local_hostname) -- causes every request
         # to fail with 502 "upstream SSL certificate does not match
-        # 127.0.0.1" (confirmed via runtime testing). vault-proxy.conf.j2
-        # already sets this; this file was missing it.
+        # 127.0.0.1" (confirmed via runtime testing).
         proxy_ssl_name {{ proxy_server_name }};
         proxy_set_header X-Vault-Token $http_x_vault_token;
+        # Header hygiene: never pass a client-supplied certificate header,
+        # and overwrite X-Forwarded-For so Vault's audit log records the
+        # real bastion address (port 8202 trusts both headers).
+        proxy_set_header X-Client-Cert "";
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Real-IP $remote_addr;
     }
     location /v1/ssh-ca/sign/ {
+        limit_except POST PUT {
+            deny all;
+        }
         proxy_pass {{ proxy_backend_url }};
         proxy_ssl_verify on;
         proxy_ssl_trusted_certificate {{ proxy_tls_ca }};
@@ -43,6 +75,9 @@ server {
         proxy_ssl_server_name on;
         proxy_ssl_name {{ proxy_server_name }};
         proxy_set_header X-Vault-Token $http_x_vault_token;
+        proxy_set_header X-Client-Cert "";
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Real-IP $remote_addr;
     }
     location / {
         return 403;

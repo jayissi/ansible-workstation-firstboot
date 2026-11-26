@@ -64,8 +64,10 @@ extension.
   (not wildcard) -- no other OIDC client can obtain tokens
 - **Signing key:** ES384 (matching the P-384 PKI chain) with 6-hour
   automatic rotation
-- **Issuer:** Explicitly configured (not auto-detected) to match the
-  `https://vault.local` URL
+- **Issuer:** Explicitly configured (not auto-detected) as `vault_addr`
+  (`https://127.0.0.1:8200`). Browser-facing URLs use `vault.internal`
+  since [ADR-0008](ADR-0008-internal-namespace.md) (originally
+  `vault.local`); the OIDC redirect URI follows `vault_local_hostname`.
 - **Custom scopes:** None -- default OIDC claims only, minimizing
   information disclosure
 - **Token lifetime:** Time-limited by the OIDC provider configuration;

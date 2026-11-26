@@ -1,4 +1,4 @@
-policy_module(usbguard-gdm, 1.0.0)
+policy_module(usbguard-gdm, 1.1.0)
 
 # Allow usbguard-daemon to probe two GDM/session-manager sockets
 # during startup, mirroring the same upstream FD-enumeration
@@ -8,14 +8,20 @@ policy_module(usbguard-gdm, 1.0.0)
 #   2. systemd-machined's varlink socket at
 #      /run/systemd/userdb/io.systemd.Machine (systemd_machined_t
 #      domain, unix_stream_socket connectto)
+#   3. GDM's own userdb varlink socket at
+#      /run/systemd/userdb/org.gnome.DisplayManager (xdm_t domain;
+#      user-name lookups for IPCAllowedUsers go through userdb).
+#      Added 1.1.0 (2026-11-25, post-reboot sweep AVC).
 
 require {
     type usbguard_t;
     type xdm_var_run_t;
     type systemd_machined_t;
+    type xdm_t;
     class sock_file write;
     class unix_stream_socket connectto;
 }
 
 allow usbguard_t xdm_var_run_t:sock_file write;
 allow usbguard_t systemd_machined_t:unix_stream_socket connectto;
+allow usbguard_t xdm_t:unix_stream_socket connectto;

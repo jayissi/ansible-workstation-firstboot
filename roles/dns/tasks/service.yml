@@ -30,7 +30,7 @@
     enabled: true
     state: started
     daemon_reload: true
-  when: dns_blocklist_enabled | bool and not (dns_rpz_enabled | default(false) | bool)
+  when: dns_blocklist_enabled | bool
 
 # Reload NM so it picks up dns=dnsconfd and pushes upstream servers
 # to dnsconfd, which then configures Unbound's forward zones.

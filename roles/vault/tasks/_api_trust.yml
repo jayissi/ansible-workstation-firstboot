@@ -1,0 +1,53 @@
+---
+# roles/vault/tasks/_api_trust.yml
+# Assemble the TLS trust bundle Ansible uses for every Vault API call
+# (KNOWN_ISSUES P24 -- replaces validate_certs: false).
+#
+# Why a bundle instead of a single CA file: during a first deploy Vault
+# serves, in turn, the self-signed bootstrap certificate, then an
+# Agent-issued production chain (Vault Agent reloads Vault as soon as it
+# renders the server cert -- BEFORE tls_production.yml runs), then the
+# production chain. A bundle of every CA certificate present on disk validates
+# whichever one Vault is serving at that moment. ansible-core builds its
+# context with ssl.create_default_context(), which enables partial-chain
+# verification on Python 3.13+, so the Intermediate CA from the server
+# chain is a sufficient anchor before root.crt exists.
+#
+# Rebuilt (idempotently) at role start, before tls_production.yml, and
+# after the production certificate swap.
+
+- name: Api Trust | Assemble Vault API trust bundle from on-disk certificates
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      dir="{{ vault_cert_dir }}"
+      out="${dir}/api-trust.pem"
+      tmp=$(mktemp "${dir}/.api-trust.XXXXXX")
+      for f in bootstrap-ca.crt root.crt intermediate.crt; do
+        if [ -s "${dir}/${f}" ]; then
+          cat "${dir}/${f}" >>"${tmp}"
+          echo >>"${tmp}"
+        fi
+      done
+      # Issuing CA(s) from the live server chain -- every certificate AFTER
+      # the first (the leaf). The leaf itself is excluded: Vault Agent
+      # reissues it, which would make the bundle change on every run.
+      if [ -s "${dir}/server-chain.crt" ]; then
+        awk '/-----BEGIN CERTIFICATE-----/{n++} n>=2' "${dir}/server-chain.crt" >>"${tmp}"
+      fi
+      if [ -s "${out}" ] && cmp -s "${tmp}" "${out}"; then
+        rm -f "${tmp}"
+        echo unchanged
+      else
+        chown {{ vault_user }}:{{ vault_group }} "${tmp}"
+        chmod 0444 "${tmp}"
+        mv -f "${tmp}" "${out}"
+        echo changed
+      fi
+  register: __vault_api_trust
+  # Exact match: "unchanged" contains the substring "changed".
+  changed_when: __vault_api_trust.stdout | trim == 'changed'
+
+- name: Api Trust | Use the bundle for Vault API calls
+  ansible.builtin.set_fact:
+    _vault_ca_path: "{{ vault_cert_dir }}/api-trust.pem"

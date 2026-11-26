@@ -63,7 +63,17 @@
     'unbound-local' not in __dns_selinux_modules.stdout
   notify: Compile and install DNS SELinux policies
 
-- name: Install | Download root hints
+# Only fetch root hints when the file is missing. get_url still makes a
+# conditional HTTP request when the file exists, which needs working DNS --
+# so a broken resolver config could never be repaired by re-running this
+# role (KNOWN_ISSUES #7 recovery note). Periodic refreshes are handled by
+# the unbound-root-hints timer below.
+- name: Install | Check for existing root hints
+  ansible.builtin.stat:
+    path: '{{ __dns_root_hints_file }}'
+  register: __dns_root_hints_stat
+
+- name: Install | Download root hints (first install only)
   ansible.builtin.get_url:
     url: 'https://www.internic.net/domain/named.root'
     dest: '{{ __dns_root_hints_file }}'
@@ -72,7 +82,11 @@
     mode: '0644'
   retries: 5
   delay: 10
-  when: dns_root_hints_update_enabled | bool
+  register: __dns_root_hints_download
+  until: __dns_root_hints_download is succeeded
+  when:
+    - dns_root_hints_update_enabled | bool
+    - not __dns_root_hints_stat.stat.exists
 
 - name: Install | Deploy root hints update systemd service
   ansible.builtin.template:
@@ -100,7 +114,7 @@
     group: root
     mode: '0644'
   notify: Reload dns systemd units
-  when: dns_blocklist_enabled | bool and not (dns_rpz_enabled | default(false) | bool)
+  when: dns_blocklist_enabled | bool
 
 - name: Install | Deploy blocklist update systemd timer
   ansible.builtin.template:
@@ -110,4 +124,4 @@
     group: root
     mode: '0644'
   notify: Reload dns systemd units
-  when: dns_blocklist_enabled | bool and not (dns_rpz_enabled | default(false) | bool)
+  when: dns_blocklist_enabled | bool

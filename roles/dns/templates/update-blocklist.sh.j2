@@ -10,17 +10,39 @@ echo "# Unbound blocklist - auto-generated" > "$TEMP_FILE"
 echo "# Updated: $(date)" >> "$TEMP_FILE"
 echo "" >> "$TEMP_FILE"
 
-{% for url in dns_blocklist_urls + dns_additional_blocklist_urls %}
+# With RPZ enabled this is the independent CORE list (KNOWN_ISSUES P22): a
+# threat-only feed from a different provider than the RPZ zone, so DNS
+# blocking keeps working if the RPZ zone fails to load or is truncated.
+{% set __dns_blocklist_sources = dns_core_blocklist_urls if (dns_rpz_enabled | default(false) | bool)
+                                 else (dns_blocklist_urls + dns_additional_blocklist_urls) %}
+ZONES_FILE=$(mktemp)
+{% for url in __dns_blocklist_sources %}
 echo "Downloading blocklist from: {{ url }}"
-curl -sS "{{ url }}" | \
-    grep -E '^0\.0\.0\.0' | \
-    awk '$2 !~ /^(0\.0\.0\.0|127\.0\.0\.1|255\.255\.255\.255|::1|localhost)$/ {print "local-zone: \""$2"\" {{ dns_blocklist_action }}"}' >> "$TEMP_FILE" || true
+# Accepts both hosts format ("0.0.0.0 example.com") and domains-only lists
+# ("example.com"). Comments, blanks and loopback/placeholder names skipped.
+curl -sSf --max-time 120 "{{ url }}" |
+    awk '/^[[:space:]]*(#|!|$)/ {next}
+         $1 ~ /^(0\.0\.0\.0|127\.0\.0\.1)$/ {d=$2}
+         NF == 1 {d=$1}
+         d != "" && d !~ /^(0\.0\.0\.0|127\.0\.0\.1|255\.255\.255\.255|::1|localhost|localhost\.localdomain)$/ {print d}
+         {d=""}' >>"$ZONES_FILE" || true
 
 {% endfor %}
+# Deduplicate across sources: a duplicate local-zone makes Unbound reject
+# the whole configuration.
+sort -u "$ZONES_FILE" | awk '{print "local-zone: \""$1"\" {{ dns_blocklist_action }}"}' >>"$TEMP_FILE"
+rm -f "$ZONES_FILE"
 
 # Count entries
-ENTRIES=$(grep -c 'local-zone' "$TEMP_FILE" || echo "0")
+ENTRIES=$(grep -c 'local-zone' "$TEMP_FILE" || true)
 echo "Total blocklist entries: $ENTRIES"
+
+# A failed download must not replace a working list with an empty one.
+if [ "${ENTRIES:-0}" -eq 0 ] && [ -s "$BLOCKLIST_FILE" ]; then
+    echo "WARNING: downloaded 0 entries -- keeping existing $BLOCKLIST_FILE" >&2
+    rm -f "$TEMP_FILE"
+    exit 1
+fi
 
 # Move to final location with correct ownership and SELinux context
 mv "$TEMP_FILE" "$BLOCKLIST_FILE"

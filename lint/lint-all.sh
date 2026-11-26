@@ -4,13 +4,28 @@
 # =============================================================================
 # Runs inside the Podman lint container (see lint/Containerfile.lint).
 # Called by: `make lint` (bind-mounted, auto-fix enabled)
-#            `podman run --rm $(LINT_IMG)` (standalone, verify-only)
+#            `make ci`   (lint/ci-local.sh: clean snapshot, --check)
+#
+# Options:
+#   --check  Verify only -- skip the auto-fix phase. Mirrors GitHub
+#            Actions, which never modifies files.
 #
 # Exit codes:
 #   0  All checks passed
 #   1  One or more linters reported violations
 # =============================================================================
 set -euo pipefail
+
+CHECK_ONLY=false
+for arg in "$@"; do
+	case "$arg" in
+	--check) CHECK_ONLY=true ;;
+	*)
+		echo "Unknown option: $arg" >&2
+		exit 2
+		;;
+	esac
+done
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -30,6 +45,7 @@ readonly -a DOCS=(
 
 # Roles containing project-owned code (excludes vendored Galaxy content)
 readonly -a PROJECT_ROLES=(
+	roles/auth/
 	roles/common/
 	roles/dns/
 	roles/avahi/
@@ -49,12 +65,15 @@ readonly -a CODESPELL_EXTRA=(
 	requirements-lint.txt
 	requirements-rpm.txt
 	.github/
+	tests/
 )
 
 # Shell scripts owned by this project
 readonly -a SHELL_SCRIPTS=(
 	roles/common/files/bin/*
 	roles/common/files/bashrc.d/*
+	tests/*.sh
+	lint/ci-local.sh
 )
 
 # SELinux policy directories
@@ -111,12 +130,16 @@ fi
 # exits.  In standalone / CI mode, these are harmless no-ops since the
 # container filesystem is ephemeral.
 # ---------------------------------------------------------------------------
-_log "Auto-fix (best-effort)"
-if ruff check --fix . 2>/dev/null; then
-	_pass "ruff --fix"
-fi
-if markdown-table-formatter "${DOCS[@]}" 2>/dev/null; then
-	_pass "markdown-table-formatter"
+if [[ "$CHECK_ONLY" == "true" ]]; then
+	_log "Auto-fix skipped (--check: verify-only, like GitHub Actions)"
+else
+	_log "Auto-fix (best-effort)"
+	if ruff check --fix . 2>/dev/null; then
+		_pass "ruff --fix"
+	fi
+	if markdown-table-formatter "${DOCS[@]}" 2>/dev/null; then
+		_pass "markdown-table-formatter"
+	fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -127,6 +150,7 @@ declare -a FAILURES=()
 # -- YAML / Ansible (broad, catches the most common issues first) ----------
 run_linter "yamllint" yamllint .
 run_linter "ansible-lint" ansible-lint
+run_linter "ansible-syntax-check" ansible-playbook playbooks/site.yml --syntax-check
 run_linter "ruff" ruff check .
 run_linter "pyright" pyright
 

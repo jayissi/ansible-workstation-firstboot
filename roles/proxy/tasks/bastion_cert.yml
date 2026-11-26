@@ -1,0 +1,61 @@
+---
+# roles/proxy/tasks/bastion_cert.yml
+# Issue the bastion's client certificate for the SSH gateway (KNOWN_ISSUES
+# P26) and store it on the Ansible CONTROLLER only, in a gitignored
+# directory. The private key never touches the workstation's disk.
+# Reissued automatically when missing or within 7 days of expiry.
+
+- name: Bastion Cert | Ensure controller-side certificate directory exists
+  ansible.builtin.file:
+    path: "{{ proxy_bastion_cert_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+
+- name: Bastion Cert | Check existing bastion certificate validity (7 days)
+  ansible.builtin.command:
+    cmd: >-
+      openssl x509 -checkend 604800 -noout
+      -in {{ proxy_bastion_cert_dir }}/client.crt
+  register: __proxy_bastion_cert_valid
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+  become: false
+
+- name: Bastion Cert | Issue bastion client certificate from Vault PKI
+  ansible.builtin.uri:
+    url: "{{ proxy_vault_addr }}/v1/pki_int/issue/bastion-gateway-client"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ proxy_vault_token }}"
+    body_format: json
+    body:
+      common_name: "{{ vault_pki_bastion_cn | default('Bastion Gateway Client') }}"
+      ttl: "{{ vault_pki_bastion_ttl | default('720h') }}"
+    ca_path: "{{ proxy_vault_ca }}"
+    status_code:
+      - 200
+  register: __proxy_bastion_issue
+  no_log: true
+  when: __proxy_bastion_cert_valid.rc != 0
+
+- name: Bastion Cert | Write certificate (+ issuing CA) to the controller
+  ansible.builtin.copy:
+    content: "{{ __proxy_bastion_issue.json.data.certificate }}\n{{ __proxy_bastion_issue.json.data.issuing_ca }}\n"
+    dest: "{{ proxy_bastion_cert_dir }}/client.crt"
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+  when: __proxy_bastion_issue is not skipped
+
+- name: Bastion Cert | Write private key to the controller
+  ansible.builtin.copy:
+    content: "{{ __proxy_bastion_issue.json.data.private_key }}\n"
+    dest: "{{ proxy_bastion_cert_dir }}/client.key"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: __proxy_bastion_issue is not skipped

@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   author: jayissi
-  description: Nginx reverse proxy for Vault UI at https://vault.local
+  description: Nginx reverse proxy for Vault UI (HTTPS, mTLS, Vault backend)
   license: MIT
   min_ansible_version: '2.15'
   platforms:

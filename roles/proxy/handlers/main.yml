@@ -8,9 +8,14 @@
     name: '{{ __proxy_service_name }}'
     state: restarted
 
+# `nginx -t` test-binds every listen socket. Run directly under become as
+# the confined admin (staff_u -> sysadm_t), the bind is denied by SELinux
+# ("bind() ... (13: Permission denied)") and every validation fails on
+# hardened re-runs. systemd-run starts nginx from init, so it transitions
+# into its normal httpd_t domain -- the same context the real service uses.
 - name: Validate nginx configuration
   ansible.builtin.command:
-    cmd: nginx -t
+    cmd: systemd-run --quiet --wait --pipe --collect --service-type=exec /usr/sbin/nginx -t
   register: __proxy_nginx_config_test
   changed_when: false
   failed_when: false

@@ -39,7 +39,7 @@
     method: GET
     headers:
       X-Vault-Token: "{{ vault_rotate_old_token }}"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
   register: vault_rotate_old_lookup
@@ -64,7 +64,7 @@
       no_parent: true
       no_default_policy: true
       display_name: "root-rotated"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
   register: vault_rotate_new_token_resp
@@ -81,7 +81,7 @@
     method: GET
     headers:
       X-Vault-Token: "{{ vault_rotate_new_token }}"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
   no_log: true
@@ -137,7 +137,7 @@
     body_format: json
     body:
       accessor: "{{ vault_rotate_old_accessor }}"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204

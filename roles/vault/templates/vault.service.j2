@@ -24,6 +24,8 @@ LimitCORE=0
 
 ProtectSystem=full
 PrivateTmp=yes
+# Vault never needs home directories (KNOWN_ISSUES P23).
+ProtectHome=yes
 PrivateDevices=yes
 SecureBits=keep-caps
 AmbientCapabilities=CAP_IPC_LOCK

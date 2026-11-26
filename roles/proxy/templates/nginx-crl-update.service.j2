@@ -1,9 +1,20 @@
 {{ ansible_managed | default('Ansible managed') | comment }}
 [Unit]
 Description=Fetch and deploy Vault PKI CRL for Nginx client cert revocation
+# The hourly timer is Persistent=true, so it also fires right after boot.
+# Without ordering it raced Vault's unseal, failed fail-closed, and left an
+# expired CRL in place (review finding E-04). Order after unseal and wait
+# (bounded) for Vault to report healthy before fetching.
+Wants=vault-unseal.service
+After=network-online.target vault.service vault-unseal.service
 
 [Service]
 Type=oneshot
+# Wait up to ~150s for an initialized, unsealed Vault (HTTP 200 from
+# sys/health). If Vault never becomes healthy the script still runs and
+# applies its own fail-closed staleness logic.
+ExecStartPre=/usr/bin/sh -c 'for _ in $(seq 1 30); do curl -sf --resolve {{ proxy_server_name }}:8200:127.0.0.1 --cacert /etc/vault.d/certs/root.crt -o /dev/null https://{{ proxy_server_name }}:8200/v1/sys/health && exit 0; sleep 5; done; echo "Vault not healthy after 150s; continuing fail-closed"; exit 0'
 ExecStart=/usr/local/bin/nginx-crl-update
+TimeoutStartSec=240
 StandardOutput=journal
 StandardError=journal

@@ -11,7 +11,7 @@
     method: GET
     headers:
       X-Vault-Token: "{{ _vault_token }}"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
   register: vault_auth_methods_cert
@@ -29,7 +29,7 @@
     body_format: json
     body:
       type: cert
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
@@ -66,7 +66,7 @@
         - "{{ vault_vaultpass_policy_name }}"
       token_ttl: "{{ vault_client_cert_ttl }}"
       token_max_ttl: "{{ vault_client_cert_max_ttl }}"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
@@ -94,7 +94,7 @@
           allowed_client_ids:
             - "*"
           algorithm: "ES384"
-        validate_certs: false
+        ca_path: "{{ _vault_ca_path }}"
         status_code:
           - 200
           - 204
@@ -109,7 +109,7 @@
         body:
           entity_ids:
             - "*"
-        validate_certs: false
+        ca_path: "{{ _vault_ca_path }}"
         status_code:
           - 200
           - 204
@@ -129,7 +129,7 @@
           key: "vaultpass-key"
           id_token_ttl: "{{ vault_vaultpass_token_ttl }}"
           access_token_ttl: "{{ vault_vaultpass_token_max_ttl }}"
-        validate_certs: false
+        ca_path: "{{ _vault_ca_path }}"
         status_code:
           - 200
           - 204
@@ -144,7 +144,7 @@
         method: GET
         headers:
           X-Vault-Token: "{{ _vault_token }}"
-        validate_certs: false
+        ca_path: "{{ _vault_ca_path }}"
         status_code:
           - 200
       register: _vault_oidc_client
@@ -160,7 +160,7 @@
         body:
           allowed_client_ids:
             - "{{ _vault_oidc_client.json.data.client_id }}"
-        validate_certs: false
+        ca_path: "{{ _vault_ca_path }}"
         status_code:
           - 200
           - 204
@@ -185,7 +185,7 @@
           # "openid" is the only scope needed -- it is implicit in Vault's
           # OIDC provider so we omit scopes_supported entirely. VaultPass
           # needs only an access token for KV reads; no custom claims required.
-        validate_certs: false
+        ca_path: "{{ _vault_ca_path }}"
         status_code:
           - 200
           - 204
@@ -351,7 +351,10 @@
       -add 'TPM2 PKCS#11'
       -libfile /usr/lib64/pkcs11/libtpm2_pkcs11.so
       -force
-  changed_when: true
+  register: _vault_firefox_pkcs11_register
+  # Same fix as the Chrome task: modutil fails (rc=29) until the TPM2
+  # store is initialized, so report changed only on real success.
+  changed_when: _vault_firefox_pkcs11_register.rc == 0
   failed_when: false
 
 - name: Cert Auth | Report Firefox PKCS#11 status
@@ -376,20 +379,6 @@
 # cert from a pre-reprovision PKI yielded "failed to match all
 # constraints" (serial mismatch: cert from old CA vs new CA).
 
-# Chrome and Firefox hold file locks on cert9.db/key4.db while
-# running.  certutil -N and pk12util block waiting for the lock,
-# which looks like a hang.  Kill browser processes before touching
-# the NSS databases.  Confirmed via runtime testing: certutil -N
-# blocked for >5 minutes until the browser session was closed.
-- name: Cert Auth | Stop browsers that may lock NSS databases
-  ansible.builtin.command:
-    cmd: "pkill -u {{ common_admin_user }} -f {{ item }}"
-  loop:
-    - chrome
-    - firefox
-  failed_when: false
-  changed_when: false
-
 - name: Cert Auth | Wait for Vault Agent client cert to be rendered
   ansible.builtin.wait_for:
     path: "{{ vault_cert_dir }}/client.key"
@@ -397,100 +386,77 @@
     timeout: 30
   when: vault_root_token | default('') | length > 0
 
-# certutil -N / pk12util block if a browser (Chrome or Firefox) holds
-# an open file lock on cert9.db/key4.db during an active session.
-# Wiping the database files first avoids the lock entirely: the OS
-# keeps the old inode alive for the browser's open handle while
-# certutil creates fresh files at the same paths without contention.
-# On a fresh deploy the old database is either empty or contains
-# stale state (e.g. certs from a pre-reprovision PKI), so wiping is
-# the correct action anyway.  System CA trust (Root CA) is stored in
-# the system-wide trust store (/etc/pki/ca-trust/), not in this
-# per-user NSS database, so wiping is safe.
-- name: Cert Auth | Wipe stale Chrome NSS database (avoids TPM2 module hang)
-  ansible.builtin.file:
-    path: "{{ common_admin_home }}/.pki/nssdb/{{ item }}"
-    state: absent
+# Import is done by vault-browser-cert-sync (root oneshot), not inline:
+# the same script runs on every Agent renewal (.path on client.crt) and
+# every {{ vault_browser_cert_sync_interval }} (.timer, catches Firefox profiles created later),
+# so browsers never hold an expired cert between playbook runs
+# (KNOWN_ISSUES #50). It is idempotent (serial compare) and never kills
+# browsers -- the previous inline tasks pkill'ed Chrome/Firefox and
+# wiped ~/.pki/nssdb on every run.
+- name: Cert Auth | Deploy browser client-cert sync script
+  ansible.builtin.template:
+    src: vault-browser-cert-sync.sh.j2
+    dest: /usr/local/bin/vault-browser-cert-sync
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Cert Auth | Deploy browser client-cert sync units
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.name }}"
+    content: "{{ item.content }}"
+    owner: root
+    group: root
+    mode: "0644"
   loop:
-    - cert9.db
-    - key4.db
-    - pkcs11.txt
-    - pkcs11.txt.bak
+    - name: vault-browser-cert-sync.service
+      content: |
+        [Unit]
+        Description=Import the Vault Agent client certificate into browser NSS databases
+        After=vault-agent.service
 
-- name: Cert Auth | Create clean Chrome NSS database (empty password)
-  ansible.builtin.command:
-    cmd: >-
-      certutil -d sql:{{ common_admin_home }}/.pki/nssdb
-      -N --empty-password
-  register: _vault_nss_chrome_init
-  failed_when: false
-  changed_when: _vault_nss_chrome_init.rc == 0
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/bin/vault-browser-cert-sync
+        PrivateTmp=yes
+        ProtectSystem=full
+        TimeoutStartSec=300
+    - name: vault-browser-cert-sync.path
+      content: |
+        [Unit]
+        Description=Re-import the browser client certificate when Vault Agent renews it
 
-- name: Cert Auth | Create PKCS12 bundle from Vault Agent client cert
-  ansible.builtin.command:
-    cmd: >-
-      openssl pkcs12 -export
-      -in {{ vault_cert_dir }}/client.crt
-      -inkey {{ vault_cert_dir }}/client.key
-      -out /tmp/vault-client-cert.p12
-      -passout pass:
-      -name "VaultPass Client Cert"
-  changed_when: true
+        [Path]
+        PathModified={{ vault_cert_dir }}/client.crt
 
-- name: Cert Auth | Remove stale client cert from Chrome NSS (idempotent)
-  ansible.builtin.command:
-    cmd: >-
-      certutil -d sql:{{ common_admin_home }}/.pki/nssdb
-      -D -n "VaultPass Client Cert"
-  failed_when: false
-  changed_when: true
+        [Install]
+        WantedBy=multi-user.target
+    - name: vault-browser-cert-sync.timer
+      content: |
+        [Unit]
+        Description=Periodic browser client-certificate sync (new Firefox profiles, retries)
 
-- name: Cert Auth | Import client cert PKCS12 into Chrome NSS database
-  ansible.builtin.command:
-    cmd: >-
-      pk12util -d sql:{{ common_admin_home }}/.pki/nssdb
-      -i /tmp/vault-client-cert.p12 -W ""
-  register: _vault_nss_chrome_import
-  changed_when: "'IMPORT SUCCESSFUL' in _vault_nss_chrome_import.stdout"
+        [Timer]
+        OnBootSec=2min
+        OnUnitActiveSec={{ vault_browser_cert_sync_interval }}
 
-- name: Cert Auth | Fix Chrome NSS database ownership
-  ansible.builtin.file:
-    path: "{{ common_admin_home }}/.pki/nssdb"
-    state: directory
-    recurse: true
-    owner: "{{ common_admin_user }}"
-    group: "{{ common_admin_user }}"
+        [Install]
+        WantedBy=timers.target
+  loop_control:
+    label: "{{ item.name }}"
+  register: __vault_browser_sync_units
 
-- name: Cert Auth | Import client cert PKCS12 into Firefox NSS database
-  when: (_vault_firefox_profile_path.stdout | default('')) | trim | length > 0
-  block:
-    - name: Cert Auth | Remove stale client cert from Firefox NSS (idempotent)
-      ansible.builtin.command:
-        cmd: >-
-          certutil -d sql:{{ _vault_firefox_profile_path.stdout | trim }}
-          -D -n "VaultPass Client Cert"
-      failed_when: false
-      changed_when: true
+- name: Cert Auth | Enable browser client-cert sync path and timer
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: "{{ __vault_browser_sync_units is changed }}"
+  loop:
+    - vault-browser-cert-sync.path
+    - vault-browser-cert-sync.timer
 
-    - name: Cert Auth | Import client cert PKCS12 into Firefox NSS
-      ansible.builtin.command:
-        cmd: >-
-          pk12util -d sql:{{ _vault_firefox_profile_path.stdout | trim }}
-          -i /tmp/vault-client-cert.p12 -W ""
-      register: _vault_nss_firefox_import
-      changed_when: "'IMPORT SUCCESSFUL' in _vault_nss_firefox_import.stdout"
-
-    - name: Cert Auth | Fix Firefox NSS cert database ownership
-      ansible.builtin.file:
-        path: "{{ _vault_firefox_profile_path.stdout | trim }}/{{ item }}"
-        owner: "{{ common_admin_user }}"
-        group: "{{ common_admin_user }}"
-      loop:
-        - cert9.db
-        - key4.db
-      failed_when: false
-
-- name: Cert Auth | Clean up temporary PKCS12 file
-  ansible.builtin.file:
-    path: /tmp/vault-client-cert.p12
-    state: absent
+# The first sync run happens in site.yml Phase 3, after the fapolicyd
+# role has trusted /usr/local/bin/vault-browser-cert-sync (fapolicyd
+# blocks untrusted executables even for root; a changed script has a
+# new hash until that role updates the trust DB).

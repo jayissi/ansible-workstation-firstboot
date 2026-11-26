@@ -31,7 +31,7 @@ template {
   command     = "/usr/local/bin/vault-agent-split-cert"
 }
 
-# Separate leaf cert for Nginx reverse proxy (vault.local only).
+# Separate leaf cert for Nginx reverse proxy (proxy hostname SANs only).
 # Uses the same single-pkiCert pattern as above: one issue call, split
 # into cert + key by the command hook. Separate private key means
 # compromising Nginx does not compromise Vault's TLS identity.

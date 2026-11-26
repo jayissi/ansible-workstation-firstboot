@@ -22,9 +22,11 @@ dns_do_not_query_localhost: true
 # ---------------------------------------------------------------------------
 # Upstream DNS -- managed by dnsconfd
 # ---------------------------------------------------------------------------
-# DoT upstream servers are configured in /etc/dnsconfd/dnsconfd.conf
-# (static_servers section), not here. dnsconfd pushes them to Unbound
-# via unbound-control at runtime.
+# DoT upstream servers are rendered from dns_dot_upstreams into
+# dns_dnsconfd_config_file (static_servers). dnsconfd pushes them to Unbound
+# via unbound-control at runtime. The path MUST be the one the package reads
+# (/etc/dnsconfd.conf) -- see review finding E-03.
+dns_dnsconfd_config_file: /etc/dnsconfd.conf
 
 # ---------------------------------------------------------------------------
 # Local data (resolved without contacting upstream)
@@ -32,21 +34,26 @@ dns_do_not_query_localhost: true
 
 dns_local_zones: []
 
+# Explicit TTL for local-data records (KNOWN_ISSUES P12); per-record
+# override with a `ttl:` key.
+dns_local_data_ttl: 3600
+
 dns_local_data:
-  - name: 'vault.local'
+  - name: 'vault.internal'
     type: 'A'
     value: '127.0.0.1'
-  - name: 'status.vault.local'
+  - name: 'status.vault.internal'
     type: 'A'
     value: '127.0.0.1'
 
 dns_local_data_ptr:
   - ip: '127.0.0.1'
-    name: 'vault.local'
+    name: 'vault.internal'
 
-# Domains that should never be forwarded upstream
+# Private domains: answers may contain RFC1918/loopback addresses
+# (private-domain). `.internal` is the ICANN private-use TLD (ADR-0008).
 dns_private_domains:
-  - 'local'
+  - 'internal'
 
 # RFC1918 rebinding protection -- refuse these from upstream answers
 dns_private_addresses:
@@ -85,7 +92,9 @@ dns_unwanted_reply_threshold: 10000
 # ---------------------------------------------------------------------------
 # Privacy
 # ---------------------------------------------------------------------------
-dns_qname_minimisation: true
+# Off in forwarder mode (KNOWN_ISSUES P19): the DoT upstream always sees
+# the full name, so minimisation adds round-trips with no privacy gain.
+dns_qname_minimisation: false
 dns_qname_minimisation_strict: false
 dns_aggressive_nsec: true
 
@@ -152,6 +161,14 @@ dns_additional_blocklist_urls: []
 
 dns_blocklist_schedule: '*-*-* 04:00:00'
 
+# Core blocklist used ALONGSIDE RPZ (KNOWN_ISSUES P22). Threat-only feed from
+# a different provider than the oisd RPZ zone (HaGeZi Threat Intelligence
+# Feeds, mini). When dns_rpz_enabled is true, only these URLs feed
+# 50-blocklist.conf; otherwise the full dns_blocklist_urls set is used.
+# (Domains-only format; the jsDelivr hosts-format path returns 403.)
+dns_core_blocklist_urls:
+  - 'https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif.mini-onlydomains.txt'
+
 # ---------------------------------------------------------------------------
 # RPZ (Response Policy Zones) -- DNS-level blocking via Unbound-native fetch
 # ---------------------------------------------------------------------------
@@ -173,3 +190,28 @@ dns_selinux_dir: /opt/dns-selinux
 # 'redirect' would redirect to a local IP (requires a block-page webserver).
 # Only 'always_nxdomain' is implemented; 'redirect' is a future enhancement.
 dns_blocklist_action: 'always_nxdomain'
+
+# ---------------------------------------------------------------------------
+# DoT upstreams -- single source for dnsconfd.conf AND the firewalld
+# dot-egress policy (outbound 853 allowed only to these addresses).
+# All entries apply threat filtering (KNOWN_ISSUES P15).
+# ---------------------------------------------------------------------------
+dns_dot_upstreams:
+  - address: "9.9.9.9"
+    name: "dns.quad9.net"
+    comment: "Quad9 -- threat intelligence, no logging"
+  - address: "149.112.112.112"
+    name: "dns.quad9.net"
+    comment: "Quad9 secondary"
+  - address: "9.9.9.11"
+    name: "dns.quad9.net"
+    comment: "Quad9 + ECS"
+  - address: "149.112.112.11"
+    name: "dns.quad9.net"
+    comment: "Quad9 + ECS secondary"
+  - address: "1.1.1.2"
+    name: "cloudflare-dns.com"
+    comment: "Cloudflare malware-filtering"
+  - address: "1.0.0.2"
+    name: "cloudflare-dns.com"
+    comment: "Cloudflare malware-filtering secondary"

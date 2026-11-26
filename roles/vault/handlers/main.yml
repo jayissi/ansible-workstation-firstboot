@@ -8,15 +8,11 @@
     cmd: |
       set -euo pipefail
       cd {{ vault_selinux_dir }}
-      rm -f vault.pp tmp/vault.mod tmp/vault.mod.fc 2>/dev/null || true
-      make -f /usr/share/selinux/devel/Makefile vault.pp
-      semodule -i vault.pp
-      semanage port -a -t vault_cluster_port_t -p tcp 8200 2>/dev/null || \
-        semanage port -m -t vault_cluster_port_t -p tcp 8200 2>/dev/null || true
-      semanage port -a -t vault_cluster_port_t -p tcp 8201 2>/dev/null || \
-        semanage port -m -t vault_cluster_port_t -p tcp 8201 2>/dev/null || true
-      semanage port -a -t vault_cluster_port_t -p tcp 8202 2>/dev/null || \
-        semanage port -m -t vault_cluster_port_t -p tcp 8202 2>/dev/null || true
+      rm -f vault.pp logrotate-vault.pp tmp/*.mod tmp/*.mod.fc 2>/dev/null || true
+      # Both modules: logrotate-vault was copied but never built before,
+      # so Vault audit-log rotation always failed (KNOWN_ISSUES #41).
+      make -f /usr/share/selinux/devel/Makefile vault.pp logrotate-vault.pp
+      semodule -i vault.pp logrotate-vault.pp
       restorecon -RF /etc/vault.d/ /etc/nginx/certs/ 2>/dev/null || true
   changed_when: true
   notify: Restart vault

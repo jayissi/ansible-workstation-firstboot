@@ -17,3 +17,20 @@ common_sshd_banner: ""
 
 # System default target (graphical.target for GUI workstations)
 common_default_target: graphical.target
+
+# ---------------------------------------------------------------------------
+# Session controls (tasks/session.yml)
+# ---------------------------------------------------------------------------
+# Idle interactive shell timeout in seconds (CIS 5.6.4). 0 disables it.
+common_shell_timeout: 3600
+# Users allowed to use cron/at (CIS 5.1.8-9); all others are refused.
+common_cron_allow_users:
+  - root
+  - "{{ common_admin_user }}"
+# GNOME: lock the screen after this many idle seconds (CIS 1.8.x) ...
+common_screen_idle_delay: 900
+# ... and require the password immediately (seconds of grace after blanking).
+common_screen_lock_delay: 0
+# GDM login banner; text comes from common_sshd_banner when it is set.
+common_gdm_banner_enabled: true
+common_gdm_banner_default: "Authorized users only. Activity may be monitored and recorded."

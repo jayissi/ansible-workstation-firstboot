@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+# Password reuse prevention -- CIS 5.3.3.3.1 (pam_pwhistory via authselect
+# feature with-pwhistory reads this file).
+remember = {{ auth_pwhistory_remember }}
+{% if auth_pwhistory_enforce_for_root | bool %}
+enforce_for_root
+{% endif %}

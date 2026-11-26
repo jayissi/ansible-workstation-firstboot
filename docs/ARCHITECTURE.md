@@ -29,7 +29,7 @@ execute in this order because each depends on the previous:
 | 2     | `dns`    | Unbound (DNSSEC + DoT + blocklist), dnsconfd (NM integration, resolv.conf, split-DNS), browser DoH lockdown                                                                           |
 | 3     | `avahi`  | Hardened mDNS/DNS-SD (user-service publishing blocked, no HINFO)                                                                                                                      |
 | 4     | `vault`  | Install, bootstrap TLS (ECDSA P-384), configure, init (age+TPM2), PKI engine (3 roles), AppRole, Agent, production TLS, cert auth + OIDC, VaultPass KV, browser trust, secrets backup |
-| 5     | `proxy`  | Nginx reverse proxy (`https://vault.local` → `:8202` via backend mTLS), cert rotation via systemd path unit                                                                           |
+| 5     | `proxy`  | Nginx reverse proxy (`https://vault.internal` → `:8202` via backend mTLS), cert rotation via systemd path unit                                                                        |
 
 ### Phase 2 -- Harden
 
@@ -113,10 +113,22 @@ CA credential workflows (see
 
 All other paths return HTTP 403. Defence in depth:
 
-1. **Firewall** — only `bastion_ip` can reach port 8443
-2. **Nginx location blocks** — only two paths proxied
-3. **Vault policy** — `ssh-otp-user` grants only `create`/`update`
-4. **Rate limit** — 5 requests / 60 seconds on `ssh-otp/creds/daily`
+1. **Firewall** — only `bastion_ip` can reach port 8443 (rule in the
+   bound `FedoraWorkstation` DROP zone)
+2. **Mutual TLS** — the bastion must present a client certificate from
+   the Vault Intermediate CA with `OU=Bastion Gateway` (PKI role
+   `bastion-gateway-client`); CRL-checked. Other certificates from the
+   same CA get 403 (KNOWN_ISSUES P26)
+3. **Host allow-list** — any `Host` other than the VM address or
+   `vault-ssh-gateway.internal` is closed with 444 (P28, adapted: the
+   bastion connects by IP without SNI, so the gateway stays the 8443
+   `default_server` and checks `Host` itself)
+4. **Nginx location blocks** — only two paths proxied, `POST`/`PUT`
+   only (P27); client-supplied `X-Client-Cert` stripped and
+   `X-Forwarded-For` overwritten so Vault's audit log shows the real
+   address
+5. **Vault policy** — `ssh-otp-user` grants only `create`/`update`
+6. **Rate limit** — 5 requests / 60 seconds on `ssh-otp/creds/daily`
 
 The existing UI/admin proxy (`127.0.0.1:443`) is unchanged and
 remains loopback-only.
@@ -155,6 +167,13 @@ repos for Chrome and VS Code), USBGuard device policy, SSH login
 banner, polkit rules for GUI systemd management, hardware tuning, and
 graphical target configuration.
 
+**Session controls** (`tasks/session.yml`): idle shell timeout
+`TMOUT` from `common_shell_timeout` (default 3600 s; CIS 5.6.4),
+`/etc/cron.allow` + `/etc/at.allow` limited to root and the admin
+(CIS 5.1.8-9), and on GNOME hosts a locked dconf screen lock
+(`common_screen_idle_delay`, default 900 s) plus the GDM login banner
+(CIS 1.8.x).
+
 **Preflight Secure Boot check** — `roles/common/tasks/preflight.yml`
 detects Secure Boot state via `mokutil --sb-state` (with EFI variable
 fallback). The check is **advisory WARN only** (never fails the play)
@@ -183,12 +202,22 @@ three categories of hardware-aware service management:
 Manages the full DNS stack:
 
 - **Unbound** -- local caching resolver with DNSSEC validation, DoT
-  upstream, performance tuning, privacy hardening, and blocklist
-  (Steven Black + Hagezi Pro + URLhaus, ~76K entries, daily update
-  via systemd timer)
+  upstream, performance tuning and privacy hardening. Blocking uses two
+  independent sources: the oisd "small" RPZ zone (ADR-0004) and a core
+  `local-zone` blocklist from HaGeZi Threat Intelligence Feeds (mini),
+  refreshed daily by a systemd timer, so blocking survives an RPZ
+  failure (KNOWN_ISSUES P22). Local names use `.internal` (ADR-0008)
+  with an explicit TTL (`dns_local_data_ttl`)
 - **dnsconfd** -- RHEL-standard NetworkManager-to-Unbound integration
   layer managing `resolv.conf`, DoT upstream servers, and
-  `tls-cert-bundle`
+  `tls-cert-bundle`. Config is rendered to `/etc/dnsconfd.conf` (the
+  path the package reads) from `dns_dot_upstreams` -- Quad9 and
+  Cloudflare malware-filtering endpoints only (P15). Outbound tcp/853
+  is pinned to exactly those addresses by the firewalld `dot-egress`
+  policy (P16)
+- **systemd sandboxing** -- `unbound` and `dnsconfd` run with drop-ins
+  (`ProtectHome`, kernel/cgroup protection,
+  `LimitCORE=0`; `ProtectSystem=full` for unbound) (P23)
 - Browser policies to prevent DoH bypass (Firefox canary domain
   sinkholed, Chrome enterprise policy)
 
@@ -203,8 +232,9 @@ fingerprinting disabled, core dumps prevented, wide-area DNS-SD off.
 Complete HashiCorp Vault CE lifecycle: binary installation, bootstrap
 TLS (self-signed ECDSA P-384), server configuration, operator init
 with age+TPM2 key encryption, internal PKI engine with Root and
-Intermediate CA (ECDSA P-384, CNSA 2.0 compliant), 4 distinct PKI
-roles, AppRole authentication, Vault Agent for automated cert rotation,
+Intermediate CA (ECDSA P-384, CNSA 2.0 compliant), 5 distinct PKI
+roles, AppRole authentication (bounded, loopback-bound `secret_id`,
+auto-rotated), Vault Agent for automated cert rotation,
 production TLS certificate swap, TLS client certificate authentication
 with OIDC provider integration (`cert_auth.yml`), KV secret seeding
 with CRUD policy (`vaultpass.yml`), browser trust store
@@ -216,13 +246,30 @@ optional network access (see
 [ADR-0002](decisions/ADR-0002-vault-selinux-policy.md)). As of v1.4.0,
 `vault.te` also grants `devlog_t:unix_dgram_socket sendto` to enable
 the syslog audit backend (Vault needs to send log entries to
-`/dev/log`). The vault role additionally deploys `logrotate-vault.te`
-(in `tls_production.yml`), which allows `logrotate_t` to access
-`vault_log_t` files for audit log rotation.
+`/dev/log`); v1.5.0 adds a `dontaudit` for the Agent split scripts'
+awk `isatty()` ioctl probe. The vault role additionally deploys `logrotate-vault.te`
+(built and loaded by the same handler as `vault.pp`), which allows
+`logrotate_t` to rotate the `vault_log_t` audit log (KNOWN_ISSUES #41).
+Ports 8200-8203 are labeled `vault_cluster_port_t` (`vault_selinux_ports`;
+8203 is the implicit cluster listener of the 8202 listener).
+
+#### Vault Logging and Audit Channels
+
+| Channel                | What                                               | Where / retention                                                 |
+|------------------------|----------------------------------------------------|-------------------------------------------------------------------|
+| Operational server log | Vault stdout/stderr (`log_level = info`)           | journald (`journalctl -u vault`), persistent, 2 GiB cap           |
+| Audit device `file/`   | Every request/response, HMAC'd, JSON, one per line | `/var/log/vault/audit.log`, logrotate daily, 30 kept, compressed  |
+| Audit device `syslog/` | Same events, facility `AUTH`, tag `vault-audit`    | journald (`journalctl -t vault-audit`); records > ~2 KB are split |
+
+Two audit devices give redundancy: Vault refuses requests only when
+**every** enabled audit device fails, and the copies live in separate
+stores (file vs journal). The file device is canonical (complete JSON
+per line); Vault's syslog writer splits records larger than ~2 KB into
+consecutive entries (KNOWN_ISSUES #45).
 
 #### PKI Roles
 
-The intermediate CA issues leaf certificates through 4 distinct PKI
+The intermediate CA issues leaf certificates through 5 distinct PKI
 roles. The server and client-auth roles use `allow_any_name: true` and
 `enforce_hostnames: false` because the Common Name field carries a
 descriptive identity string (e.g., "HashiCorp Vault", "Nginx Gateway",
@@ -232,14 +279,15 @@ hostname matching. The `nginx-proxy-client` role uses
 `allow_any_name: false` to restrict issuance to the configured CN
 only (CAB reviewer R1 recommendation).
 
-| PKI Role             | Purpose                      | CN Example          | Key Flags                       | TTL   |
-|----------------------|------------------------------|---------------------|---------------------------------|-------|
-| `vault-server`       | Vault API TLS                | HashiCorp Vault     | `server_flag: true`             | 2160h |
-| `nginx-gateway`      | Nginx reverse proxy TLS      | Nginx Gateway       | `server_flag: true`             | 2160h |
-| `client-auth`        | TLS client cert (VaultPass)  | jayissi - VaultPass | `client_flag: true`, ClientAuth | 72h   |
-| `nginx-proxy-client` | Backend mTLS (Nginx → Vault) | Nginx Proxy Client  | `client_flag: true`, ClientAuth | 2160h |
+| PKI Role                 | Purpose                      | CN Example             | Key Flags                                             | TTL   |
+|--------------------------|------------------------------|------------------------|-------------------------------------------------------|-------|
+| `vault-server`           | Vault API TLS                | HashiCorp Vault        | `server_flag: true`                                   | 2160h |
+| `nginx-gateway`          | Nginx reverse proxy TLS      | Nginx Gateway          | `server_flag: true`                                   | 2160h |
+| `client-auth`            | TLS client cert (VaultPass)  | jayissi - VaultPass    | `client_flag: true`, ClientAuth                       | 72h   |
+| `nginx-proxy-client`     | Backend mTLS (Nginx → Vault) | Nginx Proxy Client     | `client_flag: true`, ClientAuth                       | 2160h |
+| `bastion-gateway-client` | Bastion → SSH gateway mTLS   | Bastion Gateway Client | `client_flag: true`, ClientAuth, `OU=Bastion Gateway` | 720h  |
 
-All four roles inherit `vault_pki_key_type: ec` /
+All five roles inherit `vault_pki_key_type: ec` /
 `vault_pki_key_bits: 384` (P-384) from defaults.
 
 #### Vault Agent Templates
@@ -265,14 +313,14 @@ permissions and the `vault` service account cannot traverse it.
 
 ### proxy
 
-Nginx reverse proxy serving `https://vault.local` (port 443) proxied
+Nginx reverse proxy serving `https://vault.internal` (port 443) proxied
 to Vault on port 8202 via backend mTLS. The dedicated Vault listener
 on port 8202 requires a client certificate
 (`tls_require_and_verify_client_cert = true`); Nginx presents the
 `nginx-proxy-client` PKI-issued cert via `proxy_ssl_certificate` and
 `proxy_ssl_certificate_key` in all three vhost templates (vault-proxy,
 vault-status, vault-ssh-gateway). Uses a separate PKI-issued server
-certificate (vault.local SAN only) for the frontend TLS termination.
+certificate (vault.internal SAN only) for the frontend TLS termination.
 Cert rotation handled by a systemd path unit watching for file changes
 (see [ADR-0003](decisions/ADR-0003-cert-rotation-path-units.md)).
 
@@ -295,11 +343,26 @@ pointing to the Intermediate CA. Only Nginx — presenting its
 process that reaches the loopback from impersonating the proxy
 without a valid client certificate.
 
-Both listeners share the same `x_forwarded_for_authorized_addrs`,
-`x_forwarded_for_client_cert_header`, and
-`x_forwarded_for_client_cert_header_decoders` configuration, so the
-browser's forwarded TLS client certificate is processed identically
-regardless of which listener receives the request.
+Forwarded-header trust (`x_forwarded_for_authorized_addrs`,
+`x_forwarded_for_client_cert_header`, `..._decoders`) exists **only on
+8202**. Every local process connects from 127.0.0.1, so trusting those
+headers on 8200 let any local process present a forged `X-Client-Cert`
+(the public half of a real user certificate) and log in through cert
+auth without the private key (review finding E-02). On 8202 the header
+is only honoured after the TLS handshake has proven the caller holds
+the Nginx proxy-client key. Regression test T-01 in
+`tests/security-test.sh` sends exactly that forged request to 8200.
+
+Ansible validates Vault's TLS certificate on every API call (`ca_path`,
+KNOWN_ISSUES P24) against `api-trust.pem`, a bundle assembled from the
+certificates on disk (saved bootstrap cert, Root CA, Intermediate CA,
+current server chain; `roles/vault/tasks/_api_trust.yml`). A bundle is
+needed because during a first deploy Vault serves the bootstrap cert,
+then an Agent-issued chain (Vault Agent reloads Vault before
+`tls_production.yml` runs), then the production chain; ansible-core's
+`ssl.create_default_context()` enables partial-chain verification on
+Python 3.13+, so the Intermediate CA is a valid anchor before
+`root.crt` exists.
 
 ### auth
 
@@ -329,7 +392,17 @@ post\_task nsswitch workaround with integrated handling. Responsibilities:
   `/var/log/`.
 - **nsswitch.conf** — hosts line override (post-authselect) to
   preserve mDNS resolution:
-  `files mdns_minimal [NOTFOUND=return] myhostname dns`
+  `files mdns_minimal [NOTFOUND=continue] myhostname dns` (an mDNS miss
+  falls through to Unbound -- KNOWN_ISSUES P21; written from the single
+  `auth_nsswitch_hosts` variable by both the dns and auth roles)
+- **pam_access** — `/etc/security/access.conf` from `auth_access_rules`:
+  root locally, the admin locally and from `ssh_allowed_sources`, cron,
+  then `-:ALL:ALL` default deny (gates SSH, sudo, su, GDM and cron)
+- **pwhistory** — `remember = 24` + `enforce_for_root`
+  (CIS 5.3.3.3.1); **su** restricted to `wheel` via `pam_wheel`
+  (CIS 5.2.7)
+- **vault-ssh-helper trust** — pinned to a copy of the Vault Root CA
+  (`/etc/vault-ssh-helper.d/vault-ca.pem`) and `allowed_roles = "daily"``
 - **SELinux Option A** — `sshd-vault-ssh-helper.te` (v1.2.0) allows
   **both** `sshd_t` and `sshd_session_t` to connect to
   `vault_cluster_port_t` (port 8200) for OTP validation, plus grants
@@ -340,20 +413,21 @@ post\_task nsswitch workaround with integrated handling. Responsibilities:
 
 **Additional custom SELinux modules** in `roles/auth/files/selinux/`:
 
-| Module               | Version | Purpose                                                                |
-|----------------------|---------|------------------------------------------------------------------------|
-| `fapolicyd-gdm.te`   | v1.1.0  | `sock_file` write + `unix_stream_socket` connectto for GDM integration |
-| `aide-efi.te`        | —       | `dosfs_t` filesystem `getattr` for AIDE `/boot/efi` scanning           |
-| `auditctl-log.te`    | v1.2.0  | `dir` read + `file` open+read for auditctl access to audit logs        |
-| `logind-usbguard.te` | v1.1.0  | `getattr`+`read` on `usbguard_tmpfs_t` for logind integration          |
-| `usbguard-gdm.te`    | —       | `sock_file` write + `unix_stream_socket` connectto for GDM             |
-| `browser-tpm2.te`    | v1.1.0  | TPM2 device access extended to `sysadm_t` for Chrome/Firefox PKCS#11   |
+| Module                  | Version | Purpose                                                                   |
+|-------------------------|---------|---------------------------------------------------------------------------|
+| `fapolicyd-gdm.te`      | v1.1.0  | `sock_file` write + `unix_stream_socket` connectto for GDM integration    |
+| `aide-efi.te`           | —       | `dosfs_t` filesystem `getattr` for AIDE `/boot/efi` scanning              |
+| `auditctl-log.te`       | v1.2.0  | `dir` read + `file` open+read for auditctl access to audit logs           |
+| `logind-usbguard.te`    | v1.2.0  | `getattr`+`open`+`read`+`search` on `usbguard_tmpfs_t` for logind         |
+| `usbguard-gdm.te`       | v1.1.0  | `sock_file` write + connectto for machined and GDM userdb sockets         |
+| `staff-systemd-user.te` | v1.0.0  | confined-admin noise: staff_t setattr own nodes; dontaudit creds/tmpfiles |
+| `browser-tpm2.te`       | v1.1.0  | TPM2 device access extended to `sysadm_t` for Chrome/Firefox PKCS#11      |
 
 > **Note:** The vault role deploys two additional SELinux modules from
 > `roles/vault/files/selinux/`: `vault.te` (custom `vault_t` domain,
 > see above) and `logrotate-vault.te` (allows `logrotate_t` to access
-> `vault_log_t` files for audit log rotation, deployed in
-> `tls_production.yml`).
+> `vault_log_t` files for audit log rotation, built by the vault
+> policy handler).
 
 Includes a forward-compatibility placeholder for FIDO2/U2F
 (`auth_pam_u2f_enabled: false`).
@@ -363,6 +437,26 @@ Includes a forward-compatibility placeholder for FIDO2/U2F
 Post-deployment read-only assertions: service health, TLS certificate
 validity, Vault seal status, firewall rules, SELinux enforcing mode,
 DNS resolution, and more.
+
+`tasks/outcomes.yml` proves each control is **effective**, not merely
+running (added after the Nov 2026 review found the firewall zone, DoT
+and the CRL refresh all "active" but not in effect):
+
+| Area     | Outcome asserted                                                                                                                                            |
+|----------|-------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Firewall | Interface and default zone are `FedoraWorkstation`; no open `ssh` service; no inbound 853; `dot-egress` active; `LogDenied=unicast`                         |
+| DNS      | `vault.internal` → 127.0.0.1; bogus DNSSEC → SERVFAIL; signed zone → `ad`; dnsconfd forwarders are `dns+tls` only; RPZ and core blocklist both block        |
+| Nginx    | Nothing on :80; CRL refresh not failed and `nextUpdate` in the future; CSP sink loopback-only                                                               |
+| Vault    | 8200 listener has no `x_forwarded_for`; Vault and Nginx certificates carry `vault.internal`                                                                 |
+| Auth/CIS | Agent forwarding off, pwhistory, su wheel-only, TMOUT, cron/at allow-lists, pam_access default deny, audit watches, screen lock                             |
+| Platform | Crypto policy `DEFAULT:NO-SHA1-MAC` (no SSH SHA-1 MACs), kexec disabled, IPv6 RA ignored, every time source NTS-authenticated                               |
+| Sandbox  | `ProtectHome`/`LimitCORE=0` on nginx, unbound, dnsconfd, vault-agent (no `NoNewPrivileges` on the first three -- KNOWN_ISSUES #39); exposure score reported |
+| Warn     | AVC denials since boot; AppRole `secret_id` days remaining                                                                                                  |
+
+`make validate` runs `make verify`, `make security-test` (on the VM,
+including test T-01), `make bastion-test` (gateway mTLS from the
+controller) and an idempotency re-run (`tests/idempotency.sh`) that
+fails if `changed=` exceeds `VALIDATE_MAX_CHANGED`.
 
 ## Configuration Ownership
 
@@ -475,20 +569,38 @@ The `collections/` vendored directory must be excluded across **all**
 tool configurations to prevent lint tools from scanning Galaxy
 collection internals:
 
-| Tool              | Exclusion Mechanism                         |
-|-------------------|---------------------------------------------|
-| yamllint          | `.yamllint` `ignore` directive              |
-| ruff              | `ruff.toml` `exclude`                       |
-| pyright           | `pyrightconfig.json` `exclude`              |
-| markdownlint-cli2 | `.markdownlint-cli2.jsonc` `ignores`        |
-| codespell         | `.codespellrc` `skip` + `ignore-words-list` |
-| checkov           | `.checkov.yml` `skip_path`                  |
+| Tool              | Exclusion Mechanism                                   |
+|-------------------|-------------------------------------------------------|
+| yamllint          | `lint/.yamllint.yml` `ignore` directive               |
+| ruff              | `pyproject.toml` `[tool.ruff]` `exclude`              |
+| pyright           | `pyproject.toml` `[tool.pyright]` `exclude`           |
+| markdownlint-cli2 | `lint/.markdownlint-cli2.yaml` `ignores`              |
+| codespell         | `pyproject.toml` `[tool.codespell]` `skip`            |
+| checkov           | `lint/.checkov.yaml` `skip-path`                      |
+| ansible-lint      | `.ansible-lint` `exclude_paths` (profile: production) |
 
-**Single `make lint` target (one build, one run):** `make lint` builds
-the Podman image and runs `lint/lint-all.sh` inside it against the
-bind-mounted host checkout (`-v $(CURDIR):/workspace:z`). The script
-auto-fixes first (ruff + table alignment), then runs all 18 linters
-with a pass/fail summary. The lint venv lives at `/opt/.venv` inside
+**Two lint entry points:**
+
+- `make lint` -- fast local loop. Builds the Podman image and runs
+  `lint/lint-all.sh` against the bind-mounted checkout
+  (`-v $(CURDIR):/workspace:z`). It auto-fixes first (ruff + table
+  alignment), then runs all 19 checks (including
+  `ansible-playbook --syntax-check`).
+- `make ci` -- **dry run of GitHub Actions before you push**
+  (`lint/ci-local.sh`). Snapshots exactly what would be pushed
+  (`git ls-files --cached --others --exclude-standard`: tracked files
+  with uncommitted edits plus new non-ignored files), builds the image
+  from that snapshot with a cache-busting build arg so the lint tools
+  are as fresh as CI's, and runs `lint-all.sh --check` (no auto-fix)
+  with **no bind mount** and freshly installed Galaxy content. Use it
+  before every push; it catches failures (e.g. ansible-lint
+  `risky-file-permissions`) that a dirty working tree can hide.
+
+Shell scripts under `tests/` and `lint/` are in the ShellCheck, shfmt
+and codespell scopes in CI, `lint-all.sh` and pre-commit alike. The
+pre-commit `shfmt`, `selint` and `hadolint` hooks call host binaries
+(`sudo dnf install shfmt selint hadolint`, the packages CI uses).
+The lint venv lives at `/opt/.venv` inside
 the image — outside `/workspace` — so it is never shadowed by the
 bind-mount (the host's own `.venv/` contains only `ansible-core`, not
 the lint toolchain). CI (`.github/workflows/lint.yml`) runs every tool
@@ -498,16 +610,16 @@ branch.
 ## Nginx Security Layers
 
 The Nginx reverse proxy implements a 6-layer defense-in-depth
-architecture for traffic reaching Vault through `https://vault.local`:
+architecture for traffic reaching Vault through `https://vault.internal`:
 
-| Layer | Name                  | Controls                                                                                                                                                                                                               |
-|-------|-----------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| 1     | Network perimeter     | Firewall `DROP` default policy; Vault bound to `127.0.0.1:8200` only; Nginx on `127.0.0.1:443`                                                                                                                         |
-| 2     | TLS + identity        | `ssl_verify_client optional` with CA chain validation, active dual-CRL revocation checking (`ssl_crl` — Intermediate + Root CA with `nextUpdate` staleness, fail-closed), ECDSA-only cipher suite, session tickets off |
-| 3     | HTTP security         | HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, CSP report-only, `server_tokens off`                                                                                               |
-| 4     | Proxy trust           | `X-Client-Cert` header sanitization (clear then set from `$ssl_client_escaped_cert`), `X-Real-IP` from `$remote_addr`, backend mTLS to Vault `:8202` (`proxy_ssl_certificate` + `proxy_ssl_certificate_key`)           |
-| 5     | Vault authorization   | `auth/cert/login` via forwarded cert, ACL policies (`vaultpass` — CRUD), token TTLs (1h idle / 24h max)                                                                                                                |
-| 6     | Operational assurance | Per-vhost `vault_mtls` log format with cert fingerprint/DN/serial, CRL hourly refresh timer, `nginx -t` before every reload                                                                                            |
+| Layer | Name                  | Controls                                                                                                                                                                                                                                                                       |
+|-------|-----------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 1     | Network perimeter     | Interface bound to the `FedoraWorkstation` DROP zone (default zone); SSH and 8443 only from `ssh_allowed_sources` / `bastion_ip`; Vault on loopback only; Nginx on `127.0.0.1:443`; nothing on :80 (project-owned `nginx.conf`)                                                |
+| 2     | TLS + identity        | `ssl_verify_client optional` with CA chain validation, active dual-CRL revocation checking (`ssl_crl` — Intermediate + Root CA with `nextUpdate` staleness, fail-closed), ECDSA-only cipher suite, session tickets off                                                         |
+| 3     | HTTP security         | HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, `Cache-Control: no-store` + `Pragma: no-cache`, CSP report-only with `report-uri /csp-report`, `server_tokens off`                                                                         |
+| 4     | Proxy trust           | `X-Client-Cert` set from the verified handshake (stripped on the gateway), `X-Forwarded-For`/`X-Real-IP` from `$remote_addr`, backend mTLS to Vault `:8202`; forwarded-header trust exists only on 8202 (not 8200)                                                             |
+| 5     | Vault authorization   | `auth/cert/login` via forwarded cert, ACL policies (`vaultpass` — CRUD), token TTLs (1h idle / 24h max)                                                                                                                                                                        |
+| 6     | Operational assurance | Structured JSON access log (`vault_mtls_json`: cert fingerprint/DN/serial, TLS protocol/cipher, `$uri` without query string), CSP violation log, CRL hourly refresh ordered after Vault unseal, `nginx -t` (via `systemd-run`) before every reload, systemd sandboxing drop-in |
 
 Rate limiting applies at Layer 3: auth endpoints at `5r/s`, API
 endpoints at `30r/s`, connection limit of `20/IP`. The default-deny

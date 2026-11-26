@@ -9,8 +9,19 @@
     group: root
     mode: '0755'
 
+# Run when the list is missing OR empty: an earlier failed download leaves a
+# header-only file, and `creates:` would then skip the update forever.
+- name: Blocklist | Count current blocklist entries
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      grep -c '^local-zone' /etc/unbound/conf.d/50-blocklist.conf 2>/dev/null || echo 0
+  register: __dns_blocklist_count
+  changed_when: false
+
 - name: Blocklist | Run initial update
   ansible.builtin.command:
     cmd: '/usr/local/bin/unbound-update-blocklist'
-    creates: '/etc/unbound/conf.d/50-blocklist.conf'
+  when: __dns_blocklist_count.stdout | int == 0
+  changed_when: true
   notify: Reload unbound

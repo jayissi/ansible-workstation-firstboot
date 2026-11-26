@@ -173,11 +173,12 @@ SERVFAIL, RPZ-listed `0-02.net` NXDOMAIN. Mitigate CVE-class issues in
 this area by keeping `unbound` patched (`dnf upgrade unbound`), not by
 reordering modules.
 
-**Recovery note:** the dns role downloads `root.hints` before it
-deploys this drop-in, so if a bad `module-config` stops Unbound the
-role cannot repair itself (name resolution fails first). Fix the
-drop-in by hand, run `unbound-checkconf`, then restart `unbound` and
-`dnsconfd`.
+**Recovery note:** the dns role used to re-download `root.hints` on
+every run, which needs working DNS, so a broken resolver config could not
+be repaired by re-running the role. Since 2026-11-25 the download only
+runs when the file is missing (the `unbound-root-hints` timer refreshes
+it), so `ansible-playbook playbooks/site.yml --tags dns` can repair a
+bad drop-in.
 
 **Status:** Fixed.
 
@@ -922,10 +923,456 @@ bootstrap validates TLS against the private Root CA.
 
 ---
 
+### 35. Fresh install: Vault started with the HashiCorp RPM's default config
+
+**Symptoms:** On a freshly reinstalled host, `vault operator init` failed
+(output hidden by `no_log`). Vault's journal showed `Storage: file`, no
+`api_addr`, and a listener on `0.0.0.0:8200` -- not the project config.
+
+**Root Cause:** The `vault` RPM ships its own `/etc/vault.d/vault.hcl`.
+`install.yml` flushes handlers early (to load the SELinux module), and
+that handler notified `Restart vault`, which **started** Vault with the
+package config before the project `vault.hcl` existed. The later
+"start Vault" task was then a no-op.
+
+**Fix:** `Restart vault` only runs once `_deploy_vault_hcl.yml` has
+deployed the project config in this play (`__vault_hcl_deploy`), and
+`init.yml` flushes handlers immediately before starting Vault.
+
+**Validation:** Full `make deploy` on a reinstalled VM, `failed=0`.
+
+**Status:** Fixed (2026-11-24).
+
+---
+
+### 36. Fresh install: auditd rule load fails on a missing watched directory
+
+**Symptoms:** `augenrules --load` failed: "Error sending add rule data
+request (No such file or directory)".
+
+**Root Cause:** A `-w /etc/vault-ssh-helper.d` watch is loaded by the
+auditd role (Phase 2 Tier 1), but that directory is created later by the
+auth role (Tier 2). Older hosts had it from earlier runs.
+
+**Fix:** A Phase 2 pre-task stats every `dir:` in `auditd_rules` and
+creates only the missing ones (0755 root:root). Existing directories are
+never touched.
+
+**Validation:** Full `make deploy` on a reinstalled VM; `ansible-lint`
+production profile.
+
+**Status:** Fixed (2026-11-24).
+
+---
+
+### 37. `nginx -t` fails under the confined admin (`sysadm_t`)
+
+**Symptoms:** `nginx: [emerg] bind() to 0.0.0.0:80 failed (13:
+Permission denied)` when the config test runs through Ansible become on
+a hardened host.
+
+**Root Cause:** `nginx -t` test-binds every listen socket. Run as
+`sysadm_t` (staff_u admin via `sudo -r sysadm_r`), the bind is denied by
+SELinux. The stock Fedora `nginx.conf` also carried a `listen 80` server.
+
+**Fix:** Project-owned `nginx.conf` (no :80 server) and the reload
+handler validates with
+`systemd-run --wait --pipe --collect /usr/sbin/nginx -t`, which runs
+nginx in its normal `httpd_t` domain.
+
+**Status:** Resolved -- 2026-11-25 -- passed post-redeploy
+validation.
+
+---
+
+### 38. DNS-over-TLS silently inactive (dnsconfd config path)
+
+**Symptoms:** dnsconfd pushed `dns+udp://<DHCP resolver>` forwarders;
+no DoT despite a complete `static_servers` list.
+
+**Root Cause:** The role wrote `/etc/dnsconfd/dnsconfd.conf`; the
+dnsconfd package reads `/etc/dnsconfd.conf` (empty package default).
+
+**Fix:** Render to `dns_dnsconfd_config_file` (`/etc/dnsconfd.conf`) and
+remove the stale directory. The verification role now asserts the
+forwarders are `dns+tls` only.
+
+**Follow-on finding:** because the file had never been read, it had never
+been validated either. Once loaded, `syslog_log: yes` crashed dnsconfd at
+start-up (`AttributeError: 'bool' object has no attribute 'startswith'`):
+`syslog_log` takes a destination string (`unix:/dev/log`), not a boolean.
+The template now uses `journal_log: yes`.
+
+**Status:** Resolved -- 2026-11-25 -- passed post-redeploy
+validation.
+
+### 39. systemd `NoNewPrivileges` breaks SELinux domain transitions
+
+**Symptoms:** After adding sandboxing drop-ins, dnsconfd failed with
+`Permission denied: '/run/dnsconfd/unbound.conf'` and unbound with
+`no search permission ... /var/lib/unbound/root.key`, although file
+ownership and labels were correct.
+
+**Root Cause:** With `NoNewPrivileges=yes`, the kernel only allows the
+exec-time SELinux transition (`init_t` -> `dnsconfd_t` / `named_t` /
+`httpd_t`) if the policy grants `nnp_transition`. The Fedora policy does
+not for these domains, so the daemons ran in the wrong domain and were
+denied access to their own files.
+
+**Fix:** The nginx, unbound and dnsconfd drop-ins omit
+`NoNewPrivileges` (documented in the templates); every other directive
+stays. `vault`/`vault-agent` keep it -- the custom `vault_t` policy
+handles the transition.
+
+**Related:** `CapabilityBoundingSet=` (empty) on vault-agent made exec
+fail ("Failed to execute /usr/bin/vault: Operation not permitted")
+because the RPM installs `/usr/bin/vault` with the file capability
+`cap_ipc_lock+ep`. The bounding set is `CAP_IPC_LOCK`, matching
+`vault.service`.
+
+**Status:** Resolved -- 2026-11-25 -- passed post-redeploy validation.
+
+---
+
+### 40. AppRole `secret_id` TTL silently capped at 32 days
+
+**Symptoms:** `secret_id_ttl 2160h` on the role, but each new
+`secret_id` expired after 32 days, which would trigger the 30-day rotation
+threshold after two days.
+
+**Root Cause:** The `approle` auth mount inherits Vault's default max
+lease TTL (768h), which caps `secret_id_ttl`.
+
+**Fix:** Tune `sys/auth/approle/tune` `max_lease_ttl` to
+`vault_approle_secret_id_ttl`. A first deploy still creates one capped
+`secret_id` (the mount is tuned just after) and rotates it once.
+
+**Status:** Resolved -- 2026-11-25 -- passed post-redeploy validation.
+
+---
+
+### 41. Vault audit-log rotation never worked (logrotate-vault not loaded)
+
+**Symptoms:** Found in the post-reboot log sweep: `logrotate_t` denied
+`getattr` on `/var/log/vault/audit.log` (`vault_log_t`). The daily
+`logrotate.service` run would fail and the file-audit log would grow
+without bound. It never showed up earlier because the logrotate timer
+(00:20) never fired during a deploy session.
+
+**Root Cause:** `logrotate-vault.te` was copied to
+`/opt/vault/selinux` but never compiled or loaded. The policy handler
+built `vault.pp` only, and the "is the module loaded" check looked for
+`vault` only. Version 1.0 of the module also granted only read-side
+access.
+
+**Fix:** The handler builds and loads both modules, and the loaded
+check requires `logrotate-vault` too, so existing hosts get it on the
+next run. Module 1.1 adds directory `write`/`add_name`/`remove_name`
+and file `setattr`/`ioctl`. That set was captured from two forced
+rotations (copytruncate, rename, delaycompress gzip) in a short
+permissive `logrotate_t` window, with permissive mode removed straight
+afterwards.
+
+**Status:** Resolved -- 2026-11-25 -- module loaded; two forced rotations in
+the real `logrotate_t` domain succeeded (`audit.log.1`, `.2.gz`) with
+no AVCs. The first scheduled run is the next 00:20 timer.
+
+---
+
+### 42. Vault cluster listener bind on 8203 denied
+
+**Symptoms:** On every start: `error starting listener: listen tcp
+127.0.0.1:8203: bind: permission denied` and an AVC (`vault_t` ->
+`unreserved_port_t`).
+
+**Root Cause:** Vault opens a cluster listener at port+1 for **every**
+`tcp` listener. The 8202 Nginx mTLS listener therefore also binds 8203,
+even on a single-node Raft cluster. Only 8200-8202 were labeled
+`vault_cluster_port_t`.
+
+**Fix:** `vault_selinux_ports` (8200, 8201, the proxy listener port and
+that port + 1) is labeled with `community.general.seport` right after
+the policy module loads, still before Vault's first start. The
+hand-rolled `semanage` calls in the handler were removed; they only ran
+when the module was first compiled.
+
+**Status:** Resolved -- 2026-11-25 -- after reboot Vault logs `serving cluster
+requests ... 127.0.0.1:8203`, with no bind ERROR and no AVC.
+
+---
+
+### 43. Agent-rendered cert/key bundles survived reboots (tmpfiles `e`)
+
+**Symptoms:** At each boot `systemd-tmpfiles` logged
+`'/opt/vault/agent-run/*-combined.tmp' already exists and is not a
+directory`. The files, which are Agent-rendered certificate and private
+key bundles, stayed on disk across reboots.
+
+**Root Cause:** `/etc/tmpfiles.d/vault-run.conf` used `e` for the
+`*.tmp` globs. `e` only adjusts directories, so the intended "clean
+transient vault secrets on boot" never happened.
+
+**Fix:** `r` (remove at boot) for `{{ vault_run_dir }}/*.tmp` and
+`{{ vault_agent_run_dir }}/*.tmp`. vault-agent re-renders the bundles
+when it starts.
+
+**Status:** Resolved -- 2026-11-25 -- reboot removed the 15:12 bundles,
+vault-agent re-rendered them at boot, and no tmpfiles warning was
+logged.
+
+---
+
+### 44. `crypto_policies` NO-SHA1 broke the VS Code repo key
+
+**Symptoms:** fapolicyd (rpmdb backend) and `rpm -qi code` logged
+`Certificate EB3E94ADBE1229CF invalid: policy violation ... SHA1 is not
+considered secure`. `rpmkeys --checksig` rejected every `code` RPM, so
+`dnf upgrade code` would fail its GPG check.
+
+**Root Cause:** Microsoft's signing key (`BC528686...EB3E94ADBE1229CF`)
+carries only a SHA-1 key binding signature, which NO-SHA1 rejects.
+NO-SHA1 also did **not** remove the `hmac-sha1` / `hmac-sha1-etm` SSH
+MACs, the goal the inventory comment gave for it.
+
+**Fix:** A custom sub-policy, `NO-SHA1-MAC` (`mac = -HMAC-SHA1`),
+installed by a `site.yml` pre-task before the crypto_policies role runs.
+The policy is now `DEFAULT:NO-SHA1-MAC`. Tested on the VM:
+`rpmkeys --checksig` reports `OK` for `code`, and `sshd -T` no longer
+lists any SHA-1 MAC. The verification role now asserts
+`ssh_sha1_macs=0`. Retry the stock NO-SHA1 once the vendor re-signs
+its key with SHA-256.
+
+**Status:** Resolved -- 2026-11-25 -- `DEFAULT:NO-SHA1-MAC` active after
+reboot; no rpm signature errors; verification asserts
+`ssh_sha1_macs=0`.
+
+---
+
+### 45. Post-reboot sweep: accepted residual messages
+
+Reviewed in the 2026-11-25 post-reboot sweep and accepted as is, with
+no project change:
+
+- **Vault syslog audit records over ~2 KB are split** into consecutive
+  journal entries, so the fragments are not valid JSON. journald itself
+  stores 5000-byte syslog messages intact (tested), so the split
+  happens in Vault's syslog writer, and the device has no size option.
+  The **file** audit device (`/var/log/vault/audit.log`) holds the
+  complete record and is the canonical source. The syslog device is an
+  independent second stream: Vault keeps serving requests if one device
+  fails. Reassemble fragments by order and PID if SIEM forwarding is
+  added (backlog P25).
+- **NetworkManager** `DNS plugin did not become ready again` at boot
+  is a startup race with dnsconfd. Resolution and DNSSEC are correct
+  once boot completes. The `org.freedesktop.resolve1` activation
+  failure is expected, since systemd-resolved is intentionally off.
+- **chrony** `Could not open keyfile /etc/chrony.keys` comes from the
+  vendor template's `keyfile` line. All sources authenticate with NTS.
+- **Boot needs a console LUKS passphrase.** The root volume has a
+  passphrase keyslot only (no TPM2 token, crypttab `none`), so every
+  reboot waits on `systemd-tty-ask-password-agent` at tty1. One sweep
+  boot spent 4 min 44 s in the initrd waiting for it. This is by design
+  today; unattended reboots would need `systemd-cryptenroll --tpm2-device`
+  (customer decision, not part of this project).
+
+---
+
+### 46. New USBGuard / logind / staff_t AVC variants after reboot
+
+**Symptoms:** The post-reboot sweep showed `usbguard_t` -> `xdm_t`
+`connectto` on `/run/systemd/userdb/org.gnome.DisplayManager`,
+`systemd_logind_t` -> `usbguard_tmpfs_t` dir `open` (`/dev/shm/qb-*`),
+and `staff_t` -> `user_tmp_t` chr_file `setattr` at each admin login.
+
+**Root Cause:** The existing project modules covered earlier variants
+only. GDM now serves its own userdb varlink socket, which USBGuard
+queries to resolve `IPCAllowedUsers` names; logind now opens, not just
+stats, the libqb IPC directory; and the confined admin's
+`systemd --user` manager chmods its `inaccessible/chr` placeholder.
+gnome-settings-daemon's `Error appending USBGuard rule: Not authorized`
+is the project's IPC ACL working as intended, not a defect.
+
+**Fix:** `usbguard-gdm` 1.1.0 (connectto `xdm_t`), `logind-usbguard`
+1.2.0 (`open`/`search`), and a new `staff-systemd-user` 1.0.0 (setattr
+on the user's own `user_tmp_t` nodes). All are built by the auth role's
+generic policy handler. `staff-systemd-user` also carries two
+`dontaudit` rules that the fixed AVC check (#48) surfaced: an optional
+`/dev/urandom` write-back by `systemd-creds` (sysadm_t, during the
+TPM2+age token decrypt) and a pipe that `systemd-tmpfiles` inherits
+from the staff_t SSH session.
+
+**Status:** Resolved -- 2026-11-25 -- the reboot after loading the modules
+showed none of these denials; 0 AVCs in the final `make validate`.
+
+---
+
+### 47. Vault Agent split scripts: awk `ioctl` AVCs
+
+**Symptoms:** After #43 (bundles now removed at boot), every boot
+logged `vault_t` `ioctl` denials from `awk` on
+`/opt/vault/agent-run/*-combined.tmp` (`vault_sys_content_t`) and on the
+`*.new` cert and key files in `/etc/vault.d/certs` (`vault_conf_t`) and
+`/etc/nginx/certs` (`httpd_config_t`). The same denials occur at each
+cert rotation.
+
+**Root Cause:** The Agent's cert-split scripts run `awk`, which probes
+`isatty()` (ioctl `TCGETS`) on its files. The reads and writes succeed;
+only the probe is denied.
+
+**Fix:** `vault.te` 1.5.0 adds
+`dontaudit vault_t { vault_sys_content_t vault_conf_t httpd_config_t }:file ioctl;`.
+This grants nothing and only silences the probe.
+
+**Status:** Resolved -- 2026-11-25 -- forced Agent re-render (bundles removed,
+agent restarted) re-ran the split scripts with 0 AVCs.
+
+---
+
+### 48. Verification AVC check always reported 0 (ausearch read stdin)
+
+**Symptoms:** `make verify` printed `PASS: 0 AVC denial(s) since boot`
+on a boot that `ausearch` run interactively showed had 25 denials.
+
+**Root Cause:** When stdin is not a terminal, `ausearch` reads events
+from **stdin** instead of the audit logs. Ansible hands every module a
+stdin pipe, so the check parsed an empty stream. The same check also
+hid a Phase 0 defect: the raw task that fixes `/root/.ansible/tmp` ran
+plain `sudo chmod`/`restorecon`, which stays in `staff_t` for the
+confined admin and was denied on every run (masked by `|| true`).
+
+**Fix:** `ausearch --input-logs` in the verification role, which now
+also lists the distinct denials when the count is non-zero. The Phase 0
+raw task uses `sudo -r sysadm_r -t sysadm_t` when the login is
+`staff_r`, the same pattern as the Makefile's `security-test` target.
+
+**Status:** Resolved -- 2026-11-25 -- the check reported the real count (WARN,
+28, itemized), then 0 AVCs across the final `make validate`
+(verify, security tests, full playbook run).
+
+---
+
+### 49. GDM greeter started a full desktop without a password (regression)
+
+**Symptoms:** After the LUKS passphrase, the console went straight to a
+GNOME desktop (Firefox restored its last tabs) with no login prompt.
+`loginctl` showed only the `gdm-greeter` session on seat0, yet that
+user ran `gnome-session-service --session=gnome` and
+`gnome-shell --mode=user`: a full, unconfined desktop as the greeter
+account. Found 2026-11-25 by the customer after the post-reboot work.
+
+**Root Cause:** The new CIS session task (`roles/common/tasks/session.yml`,
+part of this unreleased batch) used `lineinfile ... create: true` on
+`/etc/dconf/profile/gdm`. Fedora ships that profile at
+`/usr/share/dconf/profile/gdm`, and dconf reads `/etc` first, so the
+two-line project file shadowed the vendor profile. That dropped
+`file-db:/usr/share/gdm/greeter-dconf-defaults`, which puts the greeter
+in login-screen mode.
+
+**Fix:** The task no longer touches the GDM profile. It removes the
+partial file only if its content is exactly what the earlier task
+wrote, and writes a complete profile (including the `file-db` line)
+only on systems without a vendor profile. A new hard verification
+assertion fails if any `gnome-shell --mode=user` runs as the greeter
+user or `/etc/dconf/profile/gdm` lacks `greeter-dconf-defaults`. That
+assertion failed against the broken state before the fix was deployed.
+
+**Status:** Resolved -- 2026-11-25 -- partial profile removed; after a
+GDM restart the greeter runs `gnome-shell --mode=gdm` and the console
+shows the login screen; `make validate` passed with the new assertion
+(verify `ok=116 failed=0`, 13/13, 5/5, idempotency `changed=28`).
+
+---
+
+### 50. Browser client certificates: Firefox first run and renewal gap
+
+**Symptoms:** On a freshly installed host, Vault TLS-certificate login
+fails in Firefox although the certificate is valid (it works with
+`curl` and in Chrome).
+
+**Root Cause:** (1) The playbook imports the Vault Agent client
+certificate into a Firefox profile only if one already exists. A user
+who opens Firefox for the first time after the deploy gets a new
+profile without the certificate. (2) The Agent renews the certificate
+(72h TTL) by rewriting `/etc/vault.d/certs/client.crt`, but nothing
+re-imports it into the browser databases. The browser copies are
+refreshed only on playbook runs, so they expire about 72h after the
+last run.
+
+**Fix:** `vault-browser-cert-sync` (root oneshot, templated) imports the
+current client certificate into `~/.pki/nssdb` and every Firefox
+profile of `vault_browser_cert_sync_users`. It is triggered by a
+`.path` unit on `client.crt` (every Agent renewal), a timer (2 min after
+boot, then every 15 min, which picks up Firefox profiles created later),
+and the playbook's Phase 3, which runs after fapolicyd trusts the
+script. It compares serials and imports only when they differ, deletes
+the old certificate together with its private key, and wraps every NSS
+call in a timeout instead of killing browsers. It replaces the inline
+tasks that `pkill`ed Chrome/Firefox and wiped `~/.pki/nssdb` on every
+run, which removes 7 always-changed tasks. A verification assertion
+requires every browser database to hold the current serial.
+
+**Status:** Resolved -- 2026-11-25 -- the sync auto-imported into a
+Firefox profile created after the deploy. A forced Agent renewal
+(serial `3699D448...` to `0E5423A4...`) updated Chrome and Firefox via
+the `.path` unit with no playbook run, leaving one private key per
+database. Final `make validate`: verify `ok=120 failed=0` (new
+assertion included), 13/13, 5/5, idempotency `changed=21` (ceiling
+24), 0 AVCs.
+
+---
+
 ## Backlog / Future Work
 
 Deferred items tracked for future implementation. These are not
 blocking the current plan and are listed in rough priority order.
+
+### Backlog Status Summary
+
+Status markers follow the issue-tracker convention used throughout this
+file: `Resolved — YYYY-MM-DD` is the date the item **passed
+post-redeploy validation** (`make deploy` + `make validate`), not the
+date code was written. `In progress` means implemented and passing
+`make ci`, awaiting that validation. `Deferred` items carry the reason.
+
+**Validation record (2026-11-25):** fresh reinstall of `testfedora`,
+`make deploy` `failed=0`, then `make validate`: verify `ok=114
+failed=0` (all outcome assertions), security-test 13/13, bastion-test
+5/5, idempotency re-run `changed=28` (baseline 30, `failed=0`).
+
+**Post-reboot record (2026-11-25):** two reboots plus log sweeps
+(dmesg, journal, audit/AVC, failed units); issues #41-#48 fixed and
+redeployed. Final `make validate`: verify `ok=115 failed=0`,
+security-test 13/13, bastion-test 5/5, idempotency `changed=28`, and
+0 AVCs across the whole run.
+
+| Item | Title                                         | Status   | Date       | Reference                 |
+|------|-----------------------------------------------|----------|------------|---------------------------|
+| P10  | Unrestricted inbound DoT 853 rule             | Resolved | 2026-11-25 | CHANGELOG [Unreleased]    |
+| P12  | DNS local-data TTL                            | Resolved | 2026-11-25 | CHANGELOG [Unreleased]    |
+| P14  | `.local` → `.internal`                        | Resolved | 2026-11-25 | ADR-0008                  |
+| P15  | Remove Google DNS upstreams                   | Resolved | 2026-11-25 | CHANGELOG [Unreleased]    |
+| P16  | Pin DoT egress to approved upstreams          | Resolved | 2026-11-25 | firewalld `dot-egress`    |
+| P17  | DNSSEC operational verification               | Resolved | 2026-11-25 | verification/outcomes.yml |
+| P18  | DNS security regression suite                 | Partial  | 2026-11-25 | partial (see item)        |
+| P19  | QNAME minimisation off in forwarder mode      | Resolved | 2026-11-25 | CHANGELOG [Unreleased]    |
+| P20  | DoT fail-closed detection                     | Deferred | 2026-11-25 | needs design              |
+| P21  | nsswitch `[NOTFOUND=continue]`                | Resolved | 2026-11-25 | CHANGELOG [Unreleased]    |
+| P22  | Core blocklist alongside RPZ                  | Resolved | 2026-11-25 | CHANGELOG [Unreleased]    |
+| P23  | systemd sandboxing                            | Resolved | 2026-11-25 | CHANGELOG [Unreleased]    |
+| P24  | `ca_path` instead of `validate_certs: false`  | Resolved | 2026-11-25 | CHANGELOG [Unreleased]    |
+| P25  | Vault audit forwarding to SIEM                | Deferred | 2026-11-25 | needs SIEM target         |
+| P26  | SSH gateway bastion mTLS                      | Resolved | 2026-11-25 | OPERATIONS (bastion)      |
+| P27  | SSH gateway method restriction                | Resolved | 2026-11-25 | CHANGELOG [Unreleased]    |
+| P28  | 8443 default-deny (adapted)                   | Resolved | 2026-11-25 | see item                  |
+| P29  | CSP report endpoint                           | Resolved | 2026-11-25 | CHANGELOG [Unreleased]    |
+| P30  | Fedora lifecycle / RHEL evaluation            | Deferred | 2026-11-25 | customer decision         |
+| P31  | Structured JSON access logs                   | Resolved | 2026-11-25 | CHANGELOG [Unreleased]    |
+| P32  | Cache-Control response headers                | Resolved | 2026-11-25 | CHANGELOG [Unreleased]    |
+| —    | AppRole `secret_id` rotation                  | Resolved | 2026-11-25 | OPERATIONS (rotation)     |
+| —    | CIS session sub-items (TMOUT, lock, cron, su) | Resolved | 2026-11-25 | CHANGELOG [Unreleased]    |
+| —    | Vault telemetry                               | Deferred | 2026-11-25 | not in batch              |
+| —    | USBGuard class-based policy                   | Deferred | 2026-11-25 | not in batch              |
+| —    | Duplicate sudo NOPASSWD line                  | Deferred | 2026-11-25 | base image; see item      |
 
 ### Active CRL Revocation Checking (`ssl_crl`)
 
@@ -1029,6 +1476,13 @@ active plan:
 - **Cron/at restriction** — `/etc/cron.allow`, `/etc/at.allow`
   (CIS 5.1.8–9)
 
+**Status (sub-items):** Resolved — 2026-11-25 — passed
+post-redeploy validation — shell idle timeout (`common_shell_timeout`,
+default **3600 s** -- a variable, not the CIS 900 s), GNOME auto-lock,
+GDM banner, `su` via `pam_wheel`, and `cron.allow`/`at.allow` are
+implemented. Concurrent session limits and the full framework mapping
+remain open.
+
 ### IMA (Integrity Measurement Architecture)
 
 Kernel-level continuous integrity measurement, available on
@@ -1082,12 +1536,18 @@ Currently whitelists all plugged-in devices at deploy time. Could
 restrict to HID-only (keyboard/mouse) and block mass-storage USB class
 to prevent BadUSB and data-exfiltration attacks.
 
+**Status:** Deferred — 2026-11-25 — not selected for the 2026-11-25
+batch.
+
 ### Vault Telemetry
 
 Enable the `telemetry` stanza in `vault.hcl` for
 Prometheus-compatible metrics. Zero-cost to enable (no scraper
 required), provides future observability capability per HashiCorp's
 hardening checklist.
+
+**Status:** Deferred — 2026-11-25 — not selected for the 2026-11-25
+batch.
 
 ### AIDE `/boot/efi` SELinux `dosfs_t` Denial
 
@@ -1114,6 +1574,12 @@ least-privilege policies. Future improvement: extend
 `vault-agent-secret.service` to call the Vault API for a fresh
 `secret_id` on each run rather than re-decrypting static ciphertext.
 
+**Status:** Resolved — 2026-11-25 — passed post-redeploy
+validation — `secret_id_ttl: 2160h`, loopback-bound
+(`secret_id_bound_cidrs` / `token_bound_cidrs`), automatic rotation
+below 30 days, `make vault-rotate-secret-id`; `make verify` warns below
+14 days.
+
 ### Duplicate sudo NOPASSWD Line
 
 Both the base image and `00-hardening` drop-in contain a sudo
@@ -1121,14 +1587,30 @@ Both the base image and `00-hardening` drop-in contain a sudo
 but not yet consolidated. Functionally harmless (sudo processes both,
 second is redundant) but should be deduplicated.
 
+**Status:** Deferred — 2026-11-25 — the duplicate comes from the base
+image, and Ansible's `sudo -n` depends on the repo's NOPASSWD rule;
+removing NOPASSWD for humans needs a become-password design.
+
 ### Vendor-Role Non-Idempotency
 
 `linux-system-roles.tlog`, `linux-system-roles.tuned`, and
 `linux-system-roles.fapolicyd` have unconditional `changed_when: true`
 tasks. Confirmed-correct end-state via direct verification. Not a bug
 to patch — the `collections/` directory is vendored and not modified
-per project convention. `changed=18` on idempotent re-runs is the
-established baseline.
+per project convention.
+
+**Baseline (re-measured 2026-11-25 on a freshly redeployed VM):**
+`changed=21` on an idempotent re-run (`make idempotency`, ceiling
+`VALIDATE_MAX_CHANGED=24`). Breakdown: vendored tuned (3), tlog (2) and
+fapolicyd (5) roles; fapolicyd cache tuning (2); authselect re-select
+and nsswitch override (2, see #19); Vault Agent service enable (1);
+proxy client-CA chain rebuild (1); NetworkManager reload (1);
+`LogDenied=unicast` re-applied after the firewall role's
+`previous: replaced` reset (1), plus loop items. It was 28 until the
+inline VaultPass NSS re-import (7 always-changed tasks) was replaced by
+`vault-browser-cert-sync` (#50) and the Firefox PKCS#11 registration
+stopped reporting changed on failure. The old figure of 18 predates
+the validation and session controls.
 
 ### `crypto_policies` FUTURE Profile Tested and Reverted
 
@@ -1260,6 +1742,10 @@ allow on port 853 is unexpected and should be reviewed in a future
 firewall hardening pass. Not related to the Nginx/Vault mTLS plan;
 flag separately.
 
+**Status:** Resolved — 2026-11-25 — passed post-redeploy
+validation — inbound `853/tcp` accept removed from the rich rules
+(`playbooks/site.yml`); DoT is outbound-only (see P16).
+
 **Priority 11 — Logrotate verification for new Nginx log files:**
 Phase 3 of the Nginx mTLS plan added per-vhost access logs
 (`vault-mtls-access.log`, `ssh-gateway-access.log`) under
@@ -1276,6 +1762,10 @@ stanza to the proxy role.
 rather than an explicit value. Low priority since the IP (`127.0.0.1`)
 never changes, but worth adding an explicit TTL for clarity if this
 template is touched again.
+
+**Status:** Resolved — 2026-11-25 — passed post-redeploy
+validation — `dns_local_data_ttl: 3600` rendered on every `local-data`
+record (per-record `ttl:` override).
 
 **Priority 13 — Evaluate `nginxinc.nginx_core` collection for Nginx
 configuration management:**
@@ -1307,6 +1797,11 @@ reservation for private networks). Touches: `dns_local_data`,
 `local-zone: "local." nodefault` workaround in `unbound.conf.j2` after
 migration. Identified by two independent architecture reviews.
 
+**Status:** Resolved — 2026-11-25 — passed post-redeploy
+validation — migrated to `.internal` with one source of truth in the
+inventory ([ADR-0008](decisions/ADR-0008-internal-namespace.md));
+`local-zone "local." nodefault` removed.
+
 **Priority 15 — Remove Google DNS from upstream resolvers:**
 Google Public DNS (`8.8.8.8`, `8.8.4.4`) provides no malware/phishing
 filtering, unlike Quad9 and Cloudflare malware-filter variants. Unbound
@@ -1318,6 +1813,10 @@ by Quad9 and Cloudflare. Remove Google; retain 4 Quad9 endpoints
 (secondary, equivalent policy). Both apply threat filtering, so
 failover does not weaken the security posture.
 
+**Status:** Resolved — 2026-11-25 — passed post-redeploy
+validation — upstreams now `dns_dot_upstreams` (Quad9 + Cloudflare
+malware-filtering); Google removed.
+
 **Priority 16 — Restrict DoT port 853 firewall rule to approved upstreams:**
 The current rich rule `port port="853" protocol="tcp" accept` allows
 any process to establish DoT connections to any external server.
@@ -1325,6 +1824,10 @@ Restrict to the specific upstream DoT resolver IPs (Quad9 and
 Cloudflare) to prevent rogue applications from exfiltrating DNS queries
 via unauthorized DoT tunnels. Supersedes Priority 10 (which flagged the
 missing source filter; this item adds the destination filter).
+
+**Status:** Resolved — 2026-11-25 — passed post-redeploy
+validation — firewalld policy `dot-egress` (HOST → ANY) accepts tcp/853
+only to `dns_dot_upstreams`, rejects all other 853.
 
 **Priority 17 — DNSSEC operational verification test:**
 Add a DNSSEC validation test to `roles/verification/tasks/network.yml`:
@@ -1335,6 +1838,10 @@ validation is turned off to prevent potential problems" — the project's
 `module-config: "respip validator iterator"`, but runtime verification
 is needed to confirm validation is actually active, not merely
 configured.
+
+**Status:** Resolved — 2026-11-25 — passed post-redeploy
+validation — `roles/verification/tasks/outcomes.yml` asserts
+`dnssec-failed.org` → SERVFAIL and `isc.org` → NOERROR + `ad`.
 
 **Priority 18 — DNS security regression test suite:**
 Create a dedicated `dns-security-test.yml` playbook or extend the
@@ -1347,6 +1854,11 @@ dnsconfd restart recovery, browser DoH policy enforcement, and
 unauthorized outbound port 53 (blocked). Identified by both
 architecture reviews as a gap.
 
+**Status:** Resolved (partial) — 2026-11-25 — passed post-redeploy
+validation — partially: outcome checks cover normal resolution, DNSSEC
+valid/bogus, RPZ and core-blocklist blocking, internal names and
+`dns+tls`-only forwarders; upstream-failure scenarios remain open.
+
 **Priority 19 — Disable QNAME minimisation in forwarder mode:**
 `qname-minimisation: yes` is enabled in `unbound.conf.j2` but Unbound
 operates as a forwarder (all external queries go to dnsconfd-managed
@@ -1358,6 +1870,9 @@ effect is extra round-trips per cold query with zero privacy benefit
 against the party that actually sees the query. Set
 `dns_qname_minimisation: false` in defaults. Identified by third
 architecture review.
+
+**Status:** Resolved — 2026-11-25 — passed post-redeploy
+validation — `dns_qname_minimisation: false`.
 
 **Priority 20 — DoT strict mode total outage on restricted networks:**
 When TCP port 853 is blocked by the local network (hotel, corporate
@@ -1372,6 +1887,9 @@ log entry so the operator knows degradation occurred. The security
 property that matters is knowing when you have degraded; total blackout
 without notification is not a security win.
 
+**Status:** Deferred — 2026-11-25 — needs a dispatcher/health-probe
+design; tracked for a later batch.
+
 **Priority 21 — Change nsswitch `[NOTFOUND=return]` to `[NOTFOUND=continue]`:**
 The nsswitch `hosts:` line
 (`files mdns_minimal [NOTFOUND=return] myhostname dns`) terminates
@@ -1385,6 +1903,10 @@ the `dns` module. The performance cost of falling through on mDNS
 misses is negligible. This fix is independently valuable even after
 the `.local` → `.internal` migration (Priority 14).
 
+**Status:** Resolved — 2026-11-25 — passed post-redeploy
+validation — `[NOTFOUND=continue]` from the single `auth_nsswitch_hosts`
+variable, used by both the dns and auth roles.
+
 **Priority 22 — Keep minimal local-zone blocklist alongside RPZ:**
 RPZ and the legacy blocklist timer are mutually exclusive
 (`dns_rpz_enabled` disables the blocklist timer). If the RPZ zone
@@ -1395,6 +1917,11 @@ Keep a minimal high-confidence malware `local-zone` blocklist (even
 just a few hundred entries) active at all times via `conf.d/` drop-in,
 independent of RPZ state. The overlap is harmless; the loss of blocking
 when RPZ fails is not.
+
+**Status:** Resolved — 2026-11-25 — passed post-redeploy
+validation — core HaGeZi TIF-mini `local-zone` list now runs alongside
+RPZ (`dns_core_blocklist_urls`), de-duplicated, with an empty-download
+guard.
 
 **Priority 23 — systemd sandboxing for DNS services:**
 Add systemd sandboxing directives to `dnsconfd.service` and
@@ -1411,6 +1938,11 @@ for its dnsconfd integration. Requires careful testing for SELinux
 interaction — the Vault syslog audit debugging in this session
 demonstrated that `PrivateDevices=yes` can cause unexpected failures
 when combined with custom SELinux domains.
+
+**Status:** Resolved — 2026-11-25 — passed post-redeploy
+validation — sandboxing drop-ins for unbound (`ProtectSystem=full`),
+dnsconfd and nginx; hardened vault-agent unit; asserted by the outcome
+checks.
 
 **Priority 24 — Convert `validate_certs: false` to `ca_path` in pki_engine.yml:**
 All 27 `ansible.builtin.uri` tasks in `roles/vault/tasks/pki_engine.yml`
@@ -1429,6 +1961,11 @@ ordering constraint. No further deep-dive is needed — the pattern is
 proven by the CRL bootstrap fix and the approach is well understood.
 Identified by CAB reviewer R1 as a production readiness concern.
 
+**Status:** Resolved — 2026-11-25 — passed post-redeploy
+validation — all vault-role `uri` tasks validate TLS with `ca_path`
+(`_vault_ca_path`: saved bootstrap certificate, then the production Root
+CA); proxy, verification and Phase 2 calls use the Root CA.
+
 **Priority 25 — Vault audit remote log forwarding to SIEM:**
 HashiCorp recommends at least two audit devices with at least one
 forwarding to a remote system. Currently Vault has file + syslog audit
@@ -1436,6 +1973,8 @@ backends, both local. Add centralized SIEM forwarding (e.g., via rsyslog
 or a dedicated audit socket backend) for tamper-resistant, queryable
 audit trails. CAB reviewer R1 identified this as a production
 prerequisite.
+
+**Status:** Deferred — 2026-11-25 — needs a customer SIEM/syslog target.
 
 **Priority 26 — SSH gateway mTLS for bastion hosts:**
 The SSH credential gateway (port 8443) does not request client
@@ -1446,6 +1985,11 @@ client certificate via a dedicated PKI role and add
 for independent bastion identity verification. CAB reviewer R1
 recommendation.
 
+**Status:** Resolved — 2026-11-25 — passed post-redeploy
+validation — PKI role `bastion-gateway-client`; gateway
+`ssl_verify_client on` + CRL + `OU=Bastion Gateway` allow-list; cert
+issued to the controller's `.bastion/`.
+
 **Priority 27 — SSH gateway HTTP method restriction:**
 The SSH gateway location blocks accept all HTTP methods. The credential
 issuance endpoints (`/v1/ssh-otp/creds/` and `/v1/ssh-ca/sign/`) only
@@ -1453,11 +1997,21 @@ require POST. Add `limit_except POST { deny all; }` to both location
 blocks to prevent GET, PUT, DELETE, and other methods from reaching
 Vault. CAB reviewer R1 recommendation.
 
+**Status:** Resolved — 2026-11-25 — passed post-redeploy
+validation — `limit_except POST PUT { deny all; }` on both gateway paths
+(the Vault CLI writes with PUT, so PUT must stay allowed).
+
 **Priority 28 — Default-deny catch-all for port 8443:**
 The default-deny virtual host (`default-deny.conf`) covers port 443
 only. Port 8443 (SSH gateway) has no separate default server block for
 unknown hostnames. Add a default_server block on port 8443 that returns
 444, matching the port 443 pattern. CAB reviewer R1 recommendation.
+
+**Status:** Resolved — 2026-11-25 — passed post-redeploy
+validation — **adapted**: the bastion connects by IP without SNI, so a
+separate catch-all would break it and bypass mTLS. The gateway stays the
+8443 `default_server` and returns 444 for any `Host` other than the VM
+address or `vault-ssh-gateway.internal`.
 
 **Priority 29 — CSP report-uri / report-to endpoint:**
 The Content-Security-Policy-Report-Only header has no `report-uri` or
@@ -1465,6 +2019,11 @@ The Content-Security-Policy-Report-Only header has no `report-uri` or
 only visible in browser DevTools, not server-side. Configure a local
 reporting endpoint or use Vault's native UI header mechanism once CSP is
 promoted to enforcing mode. CAB reviewer R1 and MDN best practice.
+
+**Status:** Resolved — 2026-11-25 — passed post-redeploy
+validation — `report-uri /csp-report` → loopback-only sink (port 8008,
+already `http_port_t`) so nginx logs the JSON report to
+`csp-report.log`.
 
 **Priority 30 — Fedora lifecycle / RHEL migration evaluation:**
 Fedora has an approximately 13-month release maintenance lifecycle,
@@ -1474,6 +2033,8 @@ RHEL 10 for longer support cycles, controlled package updates, and a
 defined Nginx/Vault upgrade schedule. CAB reviewer R1 raised this as a
 production platform concern.
 
+**Status:** Deferred — 2026-11-25 — platform decision for the customer.
+
 **Priority 31 — Structured JSON access logging for SIEM:**
 The current `vault_mtls` log format uses flat text fields. Convert to
 structured JSON format with dedicated keys for cert serial, DN,
@@ -1482,6 +2043,11 @@ and upstream timing. This enables immediate SIEM parsing and alerting on
 specific revoked serials or unexpected cipher negotiations. CAB reviewers
 R1, R2, and R3 consensus.
 
+**Status:** Resolved — 2026-11-25 — passed post-redeploy
+validation — `log_format vault_mtls_json escape=json` (cert
+serial/DN/fingerprint, TLS protocol/cipher, `$uri` without query string)
+on the proxy and gateway vhosts.
+
 **Priority 32 — Browser Cache-Control response headers:**
 Disabling Nginx's proxy cache (`proxy_cache off`) prevents server-side
 caching but does not instruct browsers or intermediate proxies to avoid
@@ -1489,3 +2055,7 @@ caching sensitive Vault responses. Add
 `Cache-Control: no-store, no-cache, must-revalidate, private` and
 `Pragma: no-cache` to the security-headers.inc snippet. CAB reviewer R1
 identified this gap.
+
+**Status:** Resolved — 2026-11-25 — passed post-redeploy
+validation — `Cache-Control: no-store, no-cache, must-revalidate,
+private` and `Pragma: no-cache` in `security-headers.inc`.

@@ -1,8 +1,16 @@
 # {{ ansible_managed }}
+# Included at SERVER level by every vhost. nginx rule: if a location block
+# declares ANY add_header, it inherits NONE of these -- re-include this file
+# in that location, or the security headers silently disappear there.
 add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 add_header X-Content-Type-Options "nosniff" always;
 add_header X-Frame-Options "DENY" always;
 add_header Referrer-Policy "no-referrer" always;
 add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;
 add_header X-Robots-Tag "noindex, nofollow, noarchive" always;
-add_header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'" always;
+add_header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; report-uri /csp-report" always;
+# Never let browsers or intermediaries cache Vault responses, which can
+# contain secrets and tokens (KNOWN_ISSUES P32). proxy_cache off only
+# covers nginx itself.
+add_header Cache-Control "no-store, no-cache, must-revalidate, private" always;
+add_header Pragma "no-cache" always;

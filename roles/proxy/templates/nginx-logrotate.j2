@@ -1,0 +1,17 @@
+{{ ansible_managed | default('Ansible managed') | comment }}
+# Replaces Fedora's stock /etc/logrotate.d/nginx so rotated logs (which
+# contain client certificate DNs and serials) are created 0640, not
+# world-readable.
+/var/log/nginx/*.log {
+    create 0640 nginx root
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    sharedscripts
+    postrotate
+        /bin/kill -USR1 $(cat /run/nginx.pid 2>/dev/null) 2>/dev/null || true
+    endscript
+}

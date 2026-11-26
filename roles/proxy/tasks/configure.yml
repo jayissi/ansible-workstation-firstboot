@@ -24,6 +24,52 @@
     mode: '0644'
   notify: Reload nginx
 
+- name: Configure | Deploy project-owned nginx.conf (no default :80 server)
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  notify: Reload nginx
+
+- name: Configure | Ensure nginx systemd drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/system/nginx.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Configure | Deploy nginx sandboxing drop-in (KNOWN_ISSUES P23)
+  ansible.builtin.template:
+    src: nginx-hardening.conf.j2
+    dest: /etc/systemd/system/nginx.service.d/10-hardening.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - Reload proxy systemd units
+    - Restart nginx
+
+- name: Configure | Deploy nginx log rotation (rotated logs 0640, not 0644)
+  ansible.builtin.template:
+    src: nginx-logrotate.j2
+    dest: /etc/logrotate.d/nginx
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Configure | Deploy CSP report sink (loopback only)
+  ansible.builtin.template:
+    src: csp-report-sink.conf.j2
+    dest: '{{ __proxy_conf_d_dir }}/csp-report-sink.conf'
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload nginx
+
 - name: Configure | Deploy default-deny catch-all server block
   ansible.builtin.template:
     src: default-deny.conf.j2
@@ -60,9 +106,9 @@
     body_format: json
     body:
       common_name: "{{ vault_pki_nginx_cn }}"
-      alt_names: "{{ proxy_server_name }},status.vault.local"
+      alt_names: "{{ proxy_server_name }},{{ proxy_status_server_name }}"
       ttl: "{{ proxy_leaf_ttl | default('2160h') }}"
-    validate_certs: false
+    ca_path: "{{ proxy_vault_ca }}"
     status_code:
       - 200
   register: __proxy_leaf_cert
@@ -118,7 +164,7 @@
   when: __proxy_leaf_cert is not skipped and __proxy_leaf_cert.json is defined
 
 # ---------------------------------------------------------------------------
-# Vault health status vhost -- https://status.vault.local -> /v1/sys/health
+# Vault health status vhost -- https://<proxy_status_server_name> -> /v1/sys/health
 # ---------------------------------------------------------------------------
 - name: Configure | Deploy Vault status endpoint configuration
   ansible.builtin.template:
@@ -133,8 +179,8 @@
 # CRL automation -- fetch and deploy Vault PKI CRL for client cert revocation
 # ---------------------------------------------------------------------------
 - name: Configure | Deploy CRL update script
-  ansible.builtin.copy:
-    src: bin/nginx-crl-update
+  ansible.builtin.template:
+    src: nginx-crl-update.sh.j2
     dest: /usr/local/bin/nginx-crl-update
     owner: root
     group: root
@@ -147,7 +193,7 @@
 
 - name: Configure | Bootstrap Intermediate CRL from Vault PKI (first run only)
   ansible.builtin.uri:
-    url: https://vault.local:8200/v1/pki_int/crl/pem
+    url: "https://{{ proxy_server_name }}:8200/v1/pki_int/crl/pem"
     method: GET
     ca_path: /etc/nginx/certs/root.crt
     return_content: true
@@ -157,7 +203,7 @@
 
 - name: Configure | Bootstrap Root CRL from Vault PKI (first run only)
   ansible.builtin.uri:
-    url: https://vault.local:8200/v1/pki/crl/pem
+    url: "https://{{ proxy_server_name }}:8200/v1/pki/crl/pem"
     method: GET
     ca_path: /etc/nginx/certs/root.crt
     return_content: true

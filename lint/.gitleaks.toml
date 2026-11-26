@@ -14,6 +14,10 @@ title = "ansible-workstation-firstboot gitleaks config"
   regexTarget = "line"
   paths = [
     '''\.secrets\.baseline$''',
+    # Gitignored, controller-only bastion client cert/key issued by
+    # roles/proxy/tasks/bastion_cert.yml -- `make lint` bind-mounts the
+    # working tree, so gitleaks --no-git would otherwise flag it.
+    '''(^|/)\.bastion/''',
   ]
   regexes = [
     '''changeme-encrypt-this-file-with-ansible-vault''',

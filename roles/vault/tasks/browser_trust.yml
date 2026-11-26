@@ -58,8 +58,8 @@
           "DisplayBookmarksToolbar": "always",
           "ManagedBookmarks": [
             { "toplevel_name": "Managed" },
-            { "name": "Vault", "url": "https://vault.local/ui/vault/auth?with=cert" },
-            { "name": "Vault Status", "url": "https://status.vault.local" }
+            { "name": "Vault", "url": "https://{{ vault_local_hostname }}/ui/vault/auth?with=cert" },
+            { "name": "Vault Status", "url": "https://{{ vault_status_hostname }}" }
           ],
           "ExtensionSettings": {
             "uBlock0@raymondhill.net": {

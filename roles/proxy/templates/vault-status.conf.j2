@@ -1,9 +1,9 @@
 {{ ansible_managed | default('Ansible managed') | comment }}
-# Vault health status endpoint: https://status.vault.local -> /v1/sys/health
+# Vault health status endpoint: https://{{ proxy_status_server_name }} -> /v1/sys/health
 
 server {
     listen {{ proxy_listen_address }}:{{ proxy_listen_port }} ssl;
-    server_name status.vault.local;
+    server_name {{ proxy_status_server_name }};
 
     ssl_certificate     {{ proxy_tls_cert }};
     ssl_certificate_key {{ proxy_tls_key }};

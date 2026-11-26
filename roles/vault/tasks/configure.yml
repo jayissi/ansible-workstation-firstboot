@@ -2,6 +2,16 @@
 # roles/vault/tasks/configure.yml
 # Deploy vault.hcl configuration and systemd services
 
+# Upgrade path for the .local -> .internal rename (ADR-0008): drop the
+# old loopback entry so a stale name can't mask a misconfiguration. Runs
+# before the add task; a no-op on fresh installs.
+- name: Configure | Remove legacy vault.local entry from /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.0\.0\.1\s+vault\.local\s*$'
+    state: absent
+  when: vault_local_hostname != 'vault.local'
+
 - name: Configure | Add Vault local hostname to /etc/hosts
   ansible.builtin.lineinfile:
     path: /etc/hosts

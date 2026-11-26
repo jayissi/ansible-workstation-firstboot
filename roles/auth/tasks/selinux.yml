@@ -44,6 +44,9 @@
     - usbguard-gdm.te
     - usbguard-gdm.if
     - usbguard-gdm.fc
+    - staff-systemd-user.te
+    - staff-systemd-user.if
+    - staff-systemd-user.fc
   notify: Compile and install auth SELinux policies
 
 - name: Selinux | Check if auth SELinux modules are loaded
@@ -57,5 +60,6 @@
     'aide-efi' not in __auth_selinux_modules.stdout or
     'auditctl-log' not in __auth_selinux_modules.stdout or
     'logind-usbguard' not in __auth_selinux_modules.stdout or
-    'usbguard-gdm' not in __auth_selinux_modules.stdout
+    'usbguard-gdm' not in __auth_selinux_modules.stdout or
+    'staff-systemd-user' not in __auth_selinux_modules.stdout
   notify: Compile and install auth SELinux policies

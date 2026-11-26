@@ -13,3 +13,28 @@
   ansible.builtin.systemd_service:
     name: fapolicyd.service
     state: restarted
+
+- name: Update dconf databases
+  ansible.builtin.command:
+    cmd: dconf update
+  changed_when: true
+
+# Restart the greeter so a corrected GDM dconf profile takes effect
+# (KNOWN_ISSUES #49). Restarting gdm ends every graphical session, so
+# it only happens when no real user has a graphical session; otherwise
+# the fix applies at the next reboot (verification will flag it).
+- name: Restart GDM greeter if no user is logged in graphically
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      for s in $(loginctl list-sessions --no-legend | awk '{print $1}'); do
+        if [ "$(loginctl show-session "$s" -p Class --value)" = "user" ] &&
+           [ -n "$(loginctl show-session "$s" -p Seat --value)" ]; then
+          echo "skipped: graphical user session $s active -- reboot to apply"
+          exit 0
+        fi
+      done
+      systemctl restart gdm.service
+      echo "restarted"
+  register: __common_gdm_restart
+  changed_when: "'restarted' in __common_gdm_restart.stdout"

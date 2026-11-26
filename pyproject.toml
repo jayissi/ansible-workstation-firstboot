@@ -4,20 +4,45 @@ target-version = "py311"
 # These excludes duplicate .gitignore entries but are necessary because
 # ruff only reads .gitignore when .git/ exists, and .git/ is excluded
 # from the lint container via .containerignore (for security/size/cache).
-exclude = ["roles/linux-system-roles.*", "roles/willshersystems.*", "collections", ".venv"]
+exclude = [
+    "roles/linux-system-roles.*",
+    "roles/willshersystems.*",
+    "collections",
+    ".venv",
+    ".bastion",
+]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "S"]
+select = [
+    "E",
+    "F",
+    "W",
+    "I",
+    "UP",
+    "B",
+    "S",
+]
 
 [tool.pyright]
 typeCheckingMode = "basic"
 pythonVersion = "3.11"
 # Same rationale as [tool.ruff] exclude above.
-exclude = ["roles/linux-system-roles.*", "roles/willshersystems.*", "collections", ".venv", "**/__pycache__"]
+exclude = [
+    "roles/linux-system-roles.*",
+    "roles/willshersystems.*",
+    "collections",
+    ".venv",
+    ".bastion",
+    "**/__pycache__",
+]
 
 [tool.codespell]
-skip = ".git,*.pdf,.venv,*.te,*.fc,*.if"
+# .bastion holds the controller-only bastion certificate (base64 noise).
+skip = ".git,*.pdf,.venv,.bastion,*.te,*.fc,*.if"
 ignore-words-list = "hashi,te,aer,ue"
 
 [tool.bandit]
-exclude_dirs = [".venv"]
+exclude_dirs = [
+    ".venv",
+    ".bastion",
+]

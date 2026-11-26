@@ -16,3 +16,6 @@ inventory/group_vars/all/vault.yml
 collections/ansible_collections/
 roles/linux-system-roles.*/
 roles/willshersystems.*/
+
+# Bastion client certificate/key (controller-only secret)
+.bastion/

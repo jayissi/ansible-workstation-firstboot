@@ -1,0 +1,417 @@
+---
+# roles/verification/tasks/outcomes.yml
+# OUTCOME assertions: prove each control is *effective*, not merely that a
+# service is running. Added after the Nov 2026 environment review found the
+# firewall zone, DNS-over-TLS and CRL refresh all "active" but not in effect.
+# Every task here is read-only (changed_when: false).
+
+# ==================================================================
+# Firewall (review E-01, KNOWN_ISSUES P10 / P16)
+# ==================================================================
+- name: Outcomes | Gather firewall state
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      iface="{{ ansible_default_ipv4.interface | default('') }}"
+      echo "iface_zone=$(firewall-cmd --get-zone-of-interface="$iface" 2>/dev/null || echo none)"
+      echo "default_zone=$(firewall-cmd --get-default-zone)"
+      echo "services=$(firewall-cmd --zone={{ verification_expected_zone }} --list-services | tr ' ' ',')"
+      echo "log_denied=$(firewall-cmd --get-log-denied)"
+      echo "active_policies=$(firewall-cmd --get-active-policies 2>/dev/null | tr '\n' ' ')"
+      firewall-cmd --zone={{ verification_expected_zone }} --list-rich-rules | sed 's/^/rich=/'
+      firewall-cmd --policy=dot-egress --list-rich-rules 2>/dev/null | sed 's/^/dot=/'
+  register: verification_fw_state
+  changed_when: false
+
+- name: Outcomes | Assert hardened firewall zone is in effect
+  ansible.builtin.assert:
+    that:
+      - "'iface_zone=' ~ verification_expected_zone in verification_fw_state.stdout_lines"
+      - "'default_zone=' ~ verification_expected_zone in verification_fw_state.stdout_lines"
+      - "verification_fw_state.stdout is not search('(?m)^services=(.*,)?ssh(,|$)')"
+      - "verification_fw_state.stdout is search('rich=.*service name=\"ssh\" accept')"
+      - "verification_fw_state.stdout is not search('rich=.*port=\"853\"')"
+      - "'log_denied=unicast' in verification_fw_state.stdout_lines"
+    quiet: true
+    success_msg: "PASS: interface + default zone = {{ verification_expected_zone }}; ssh only via source rich rules; no inbound 853; LogDenied=unicast"
+    fail_msg: "FAIL: hardened firewall zone not in effect -- {{ verification_fw_state.stdout_lines }}"
+
+- name: Outcomes | Assert DoT egress policy is active and pinned
+  ansible.builtin.assert:
+    that:
+      - "verification_fw_state.stdout is search('active_policies=.*dot-egress')"
+      - "verification_fw_state.stdout is search('dot=.*port=\"853\".*reject')"
+      - "verification_fw_state.stdout is search('dot=.*destination address=.*port=\"853\".*accept')"
+    quiet: true
+    success_msg: "PASS: outbound tcp/853 allowed only to the approved DoT upstreams"
+    fail_msg: "FAIL: dot-egress policy missing or inactive"
+
+# ==================================================================
+# DNS (review E-03, KNOWN_ISSUES P14 / P15 / P17 / P22)
+# ==================================================================
+- name: Outcomes | Gather DNS behaviour
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      q() { dig +time=4 +tries=2 "$@" @127.0.0.1 2>/dev/null; }
+      echo "internal=$(q +short {{ verification_vault_hostname }} | head -1)"
+      echo "bogus_status=$(q {{ verification_dnssec_bogus }} | awk '/status:/{gsub(",","",$6); print $6}')"
+      echo "signed_status=$(q +dnssec {{ verification_dnssec_signed }} | awk '/status:/{gsub(",","",$6); print $6}')"
+      echo "signed_flags=$(q +dnssec {{ verification_dnssec_signed }} | awk '/^;; flags:/{print}' | tr -s ' ' | tr ' ' '_')"
+      rpz=$(awk '$2=="CNAME" && $3=="." {print $1; exit}' /var/lib/unbound/oisdsmall.rpz.zone 2>/dev/null || true)
+      echo "rpz_name=${rpz}"
+      [ -n "$rpz" ] && echo "rpz_status=$(q "$rpz" | awk '/status:/{gsub(",","",$6); print $6}')"
+      echo "core_entries=$(grep -c '^local-zone' /etc/unbound/conf.d/50-blocklist.conf 2>/dev/null || echo 0)"
+      echo "forwarders=$(journalctl -u dnsconfd -b --no-pager -o cat 2>/dev/null | grep 'Unbound updated to configuration' | tail -1 | tr -d ' ')"
+  register: verification_dns_state
+  changed_when: false
+
+- name: Outcomes | Assert internal names and DNSSEC validation
+  ansible.builtin.assert:
+    that:
+      - "'internal=127.0.0.1' in verification_dns_state.stdout_lines"
+      - "'bogus_status=SERVFAIL' in verification_dns_state.stdout_lines"
+      - "'signed_status=NOERROR' in verification_dns_state.stdout_lines"
+      - "verification_dns_state.stdout is search('signed_flags=.*_ad[_;]')"
+    quiet: true
+    success_msg: "PASS: {{ verification_vault_hostname }} -> 127.0.0.1; bogus DNSSEC -> SERVFAIL; signed zone validated (AD)"
+    fail_msg: "FAIL: DNS/DNSSEC outcome wrong -- {{ verification_dns_state.stdout_lines }}"
+
+# Only the ROOT zone (".") is checked: dnsconfd also forwards the local
+# reverse zone (e.g. 122.168.192.in-addr.arpa) to the DHCP/LAN resolver in
+# plaintext -- correct, because public DoT resolvers cannot answer private
+# PTR lookups, and that traffic never leaves the local network.
+- name: Outcomes | Assert DNS-over-TLS forwarders for the root zone (no plaintext upstream)
+  ansible.builtin.assert:
+    that:
+      - "verification_dns_state.stdout is search('String[(].[.].[)]:..dns[+]tls://')"
+      - "verification_dns_state.stdout is not search('String[(].[.].[)]:.[^]]*dns[+]udp://')"
+    quiet: true
+    success_msg: "PASS: all upstreams for '.' are dns+tls (local reverse zone may use the LAN resolver)"
+    fail_msg: "FAIL: DoT not in effect -- {{ verification_dns_state.stdout_lines | select('match', 'forwarders=') | list }}"
+
+- name: Outcomes | Assert RPZ and the independent core blocklist both block
+  ansible.builtin.assert:
+    that:
+      - "'rpz_status=NXDOMAIN' in verification_dns_state.stdout_lines"
+      - "(verification_dns_state.stdout_lines | select('match', 'core_entries=') | first | split('=') | last | int) > 0"
+    quiet: true
+    success_msg: "PASS: RPZ-listed name -> NXDOMAIN; core blocklist loaded independently of RPZ"
+    fail_msg: "FAIL: blocking not effective -- {{ verification_dns_state.stdout_lines }}"
+
+# ==================================================================
+# Nginx / CRL (review E-04, E-07)
+# ==================================================================
+- name: Outcomes | Gather Nginx and CRL state
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      echo "port80=$(ss -Htln '( sport = :80 )' | wc -l)"
+      echo "crl_unit=$(systemctl is-failed nginx-crl-update.service 2>/dev/null || true)"
+      next=$(openssl crl -in /etc/nginx/certs/client-ca.crl -noout -nextupdate 2>/dev/null | head -1 | cut -d= -f2)
+      echo "crl_valid_s=$(( $(date -d "$next" +%s 2>/dev/null || echo 0) - $(date +%s) ))"
+      echo "csp_sink=$(ss -Htln '( sport = :{{ verification_csp_sink_port }} )' | awk '{print $4}' | head -1)"
+  register: verification_nginx_state
+  changed_when: false
+
+- name: Outcomes | Assert no plaintext :80 listener and a current CRL
+  ansible.builtin.assert:
+    that:
+      - "'port80=0' in verification_nginx_state.stdout_lines"
+      - "'crl_unit=failed' not in verification_nginx_state.stdout_lines"
+      - "(verification_nginx_state.stdout_lines | select('match', 'crl_valid_s=') | first | split('=') | last | int) > 0"
+      - "'csp_sink=127.0.0.1:' ~ verification_csp_sink_port in verification_nginx_state.stdout_lines"
+    quiet: true
+    success_msg: "PASS: nothing on :80; CRL refresh healthy and nextUpdate in the future; CSP sink loopback-only"
+    fail_msg: "FAIL: Nginx/CRL outcome wrong -- {{ verification_nginx_state.stdout_lines }}"
+
+# ==================================================================
+# Vault (review E-02) and certificate names (KNOWN_ISSUES P14)
+# ==================================================================
+- name: Outcomes | Gather Vault listener and certificate SANs
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      # First listener block (127.0.0.1:8200) must carry no forwarded-header trust.
+      # Count real directives only -- the template's explanatory comment
+      # mentions x_forwarded_for_* too.
+      awk '/^listener "tcp"/{n++} n==1' /etc/vault.d/vault.hcl | grep -cE '^[[:space:]]*x_forwarded_for' | sed 's/^/xff_8200=/' || true
+      for f in /etc/vault.d/certs/server-chain.crt /etc/nginx/certs/server-chain.crt; do
+        echo "san:$f=$(openssl x509 -in "$f" -noout -ext subjectAltName 2>/dev/null | tail -1 | tr -d ' ')"
+      done
+  register: verification_vault_state
+  changed_when: false
+
+- name: Outcomes | Assert 8200 trusts no forwarded headers and certs use the internal name
+  ansible.builtin.assert:
+    that:
+      - "'xff_8200=0' in verification_vault_state.stdout_lines"
+      - "verification_vault_state.stdout is search('san:/etc/vault.d/certs/server-chain.crt=.*DNS:' ~ verification_vault_hostname)"
+      - "verification_vault_state.stdout is search('san:/etc/nginx/certs/server-chain.crt=.*DNS:' ~ verification_vault_hostname)"
+    quiet: true
+    success_msg: "PASS: port 8200 has no X-Client-Cert trust; Vault + Nginx certs carry {{ verification_vault_hostname }}"
+    fail_msg: "FAIL: Vault listener / certificate outcome wrong -- {{ verification_vault_state.stdout_lines }}"
+
+# ==================================================================
+# Authentication / CIS session controls
+# ==================================================================
+- name: Outcomes | Gather auth and session controls
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      echo "agentfwd=$(sshd -T 2>/dev/null | awk '$1=="allowagentforwarding"{print $2}')"
+      echo "remember=$(awk -F'= *' '/^remember/{print $2}' /etc/security/pwhistory.conf)"
+      echo "su_wheel=$(grep -cE '^auth\s+required\s+pam_wheel\.so\s+use_uid' /etc/pam.d/su || true)"
+      echo "tmout=$(grep -oE 'TMOUT=[0-9]+' /etc/profile.d/tmout.sh 2>/dev/null | head -1 | cut -d= -f2)"
+      echo "cron_allow=$(test -f /etc/cron.allow && test -f /etc/at.allow && echo yes || echo no)"
+      echo "access_last=$(grep -vE '^\s*(#|$)' /etc/security/access.conf | tail -1)"
+      echo "helper_roles=$(awk -F'"' '/^allowed_roles/{print $2}' /etc/vault-ssh-helper.d/config.hcl 2>/dev/null)"
+      echo "faillock_watch=$(auditctl -l | grep -c -- '-w {{ verification_faillock_dir }}' || true)"
+      echo "pamd_watch=$(auditctl -l | grep -c -- '-w /etc/pam.d' || true)"
+      if [ -x /usr/bin/dconf ]; then
+        echo "screen_lock=$(test -f /etc/dconf/db/local.d/locks/00-screensaver && echo yes || echo no)"
+      else
+        echo "screen_lock=n/a"
+      fi
+  register: verification_auth_state
+  changed_when: false
+
+- name: Outcomes | Assert auth and CIS session controls
+  ansible.builtin.assert:
+    that:
+      - "'agentfwd=no' in verification_auth_state.stdout_lines"
+      - "'remember=' ~ verification_pwhistory_remember in verification_auth_state.stdout_lines"
+      - "'su_wheel=1' in verification_auth_state.stdout_lines"
+      - "verification_shell_timeout | int == 0 or ('tmout=' ~ verification_shell_timeout) in verification_auth_state.stdout_lines"
+      - "'cron_allow=yes' in verification_auth_state.stdout_lines"
+      - "'access_last=-:ALL:ALL' in verification_auth_state.stdout_lines"
+      - "'helper_roles=daily' in verification_auth_state.stdout_lines"
+      - "'faillock_watch=0' not in verification_auth_state.stdout_lines"
+      - "'pamd_watch=0' not in verification_auth_state.stdout_lines"
+      - "'screen_lock=no' not in verification_auth_state.stdout_lines"
+    quiet: true
+    success_msg: "PASS: agent forwarding off; pwhistory; su wheel-only; TMOUT; cron/at allow-lists; pam_access default-deny; helper role pinned; audit watches; screen lock"
+    fail_msg: "FAIL: auth/session control missing -- {{ verification_auth_state.stdout_lines }}"
+
+# ==================================================================
+# GDM greeter must be the login screen, never a desktop (KNOWN_ISSUES #49)
+# ==================================================================
+- name: Outcomes | Gather GDM greeter mode
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      # ps + awk, not `pgrep -u gdm-greeter,gdm`: pgrep aborts (count 0,
+      # a false PASS) if either name is unknown -- gdm-greeter is a
+      # dynamic user that only resolves while the greeter runs.
+      echo "greeter_user_shell=$(ps -eo user:32=,args= | awk '$1 ~ /^gdm/ && /gnome-shell --mode=user/' | wc -l)"
+      if [ -f /etc/dconf/profile/gdm ] && ! grep -q greeter-dconf-defaults /etc/dconf/profile/gdm; then
+        echo "gdm_profile=partial"
+      else
+        echo "gdm_profile=ok"
+      fi
+  register: verification_gdm_state
+  changed_when: false
+
+- name: Outcomes | Assert the greeter is not running a user session
+  ansible.builtin.assert:
+    that:
+      - "'greeter_user_shell=0' in verification_gdm_state.stdout_lines"
+      - "'gdm_profile=ok' in verification_gdm_state.stdout_lines"
+    quiet: true
+    success_msg: "PASS: GDM greeter in login-screen mode; GDM dconf profile intact"
+    fail_msg: "FAIL: GDM greeter is running a desktop session or its dconf profile is partial -- {{ verification_gdm_state.stdout_lines }}"
+
+# ==================================================================
+# Browser client certificate is current (KNOWN_ISSUES #50)
+# ==================================================================
+- name: Outcomes | Check for the browser client-cert sync service
+  ansible.builtin.stat:
+    path: /etc/systemd/system/vault-browser-cert-sync.service
+  register: verification_browser_sync_unit
+
+- name: Outcomes | Gather browser client-cert state
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      want=$(openssl x509 -in {{ vault_cert_dir | default('/etc/vault.d/certs') }}/client.crt -noout -serial | cut -d= -f2)
+      echo "units=$(systemctl is-active vault-browser-cert-sync.path vault-browser-cert-sync.timer | sort -u | paste -sd,)"
+      for u in {{ (vault_browser_cert_sync_users | default([common_admin_user])) | join(' ') }}; do
+        home=$(getent passwd "$u" | cut -d: -f6)
+        as_u() { setpriv --reuid="$u" --regid="$(id -g "$u")" --init-groups env HOME="$home" "$@"; }
+        for db in "$home/.pki/nssdb" "$home"/.config/mozilla/firefox/*/ "$home"/.mozilla/firefox/*/; do
+          db=${db%/}
+          [ -f "$db/cert9.db" ] || continue
+          have=$(as_u timeout 30 certutil -L -d "sql:$db" -n '{{ vault_browser_cert_nickname | default('VaultPass Client Cert') }}' -a 2>/dev/null \
+            | openssl x509 -noout -serial 2>/dev/null | cut -d= -f2 || true)
+          if [ "$have" = "$want" ]; then echo "current $db"; else echo "STALE $db"; fi
+        done
+      done
+  register: verification_browser_cert_state
+  changed_when: false
+  when: verification_browser_sync_unit.stat.exists
+
+- name: Outcomes | Assert browser client certificates are current
+  ansible.builtin.assert:
+    that:
+      - "'units=active' in verification_browser_cert_state.stdout_lines"
+      - "verification_browser_cert_state.stdout_lines | select('match', '^current ') | list | length > 0"
+      - "verification_browser_cert_state.stdout_lines | select('match', '^STALE ') | list | length == 0"
+    quiet: true
+    success_msg: "PASS: browser NSS databases hold the current client cert; renewal sync path+timer active -- {{ verification_browser_cert_state.stdout_lines | select('match', '^current ') | list }}"
+    fail_msg: "FAIL: browser client cert stale or sync units inactive -- {{ verification_browser_cert_state.stdout_lines }}"
+  when: verification_browser_sync_unit.stat.exists
+
+# ==================================================================
+# Platform: crypto policy, sysctls, NTS (Step 2b)
+# ==================================================================
+- name: Outcomes | Gather platform hardening state
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      echo "crypto=$(update-crypto-policies --show)"
+      echo "kexec=$(sysctl -n kernel.kexec_load_disabled)"
+      echo "accept_ra=$(sysctl -n net.ipv6.conf.all.accept_ra)"
+      echo "non_nts=$(chronyc -N -n authdata 2>/dev/null | awk 'NR>2 && $2!="NTS"' | wc -l)"
+      echo "ssh_sha1_macs=$(sshd -T 2>/dev/null | awk '$1=="macs"' | grep -o 'hmac-sha1[^,]*' | wc -l)"
+  register: verification_platform_state
+  changed_when: false
+
+- name: Outcomes | Assert crypto policy, kernel and time-source hardening
+  ansible.builtin.assert:
+    that:
+      - "'crypto=' ~ verification_crypto_policy in verification_platform_state.stdout_lines"
+      - "'kexec=1' in verification_platform_state.stdout_lines"
+      - "'accept_ra=0' in verification_platform_state.stdout_lines"
+      - "'non_nts=0' in verification_platform_state.stdout_lines"
+      - "'ssh_sha1_macs=0' in verification_platform_state.stdout_lines"
+    quiet: true
+    success_msg: "PASS: crypto {{ verification_crypto_policy }} (no SSH SHA-1 MACs); kexec disabled; IPv6 RA ignored; all time sources NTS-authenticated"
+    fail_msg: "FAIL: platform hardening outcome wrong -- {{ verification_platform_state.stdout_lines }}"
+
+# ==================================================================
+# systemd sandboxing (KNOWN_ISSUES P23) -- hard checks on the key
+# directives, exposure score reported (WARN) against a threshold.
+# ==================================================================
+- name: Outcomes | Gather sandboxing properties
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      for u in {{ verification_sandboxed_units | join(' ') }}; do
+        # Query one property at a time: --value output order is not
+        # guaranteed to follow the -p argument order.
+        props="$(systemctl show "$u" -p ProtectHome --value),$(systemctl show "$u" -p LimitCORE --value),"
+        # Line looks like "-> Overall exposure level for nginx.service: 6.6 MEDIUM <emoji>".
+        score=$(systemd-analyze security "$u" 2>/dev/null | grep 'Overall exposure level' | grep -oE '[0-9]+\.[0-9]+' | head -1)
+        echo "$u=$props|${score:-?}"
+      done
+  register: verification_sandbox_state
+  changed_when: false
+
+- name: Outcomes | Assert sandboxing directives are applied
+  ansible.builtin.assert:
+    that:
+      - "verification_sandbox_state.stdout_lines | select('search', '=yes,0,') | list | length == verification_sandboxed_units | length"
+    quiet: true
+    success_msg: "PASS: ProtectHome/LimitCORE=0 on {{ verification_sandboxed_units | join(', ') }}"
+    fail_msg: "FAIL: sandboxing missing -- {{ verification_sandbox_state.stdout_lines }}"
+
+- name: Outcomes | Report sandbox exposure scores (lower is better)
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'PASS' if (verification_sandbox_state.stdout_lines
+                    | map('regex_replace', '^.*[|]', '') | map('float') | max) <= verification_sandbox_max_exposure | float
+         else 'WARN' }}: systemd-analyze exposure {{ verification_sandbox_state.stdout_lines | map('regex_replace', '=.*[|]', '=') | list }}
+      (threshold {{ verification_sandbox_max_exposure }})
+
+# ==================================================================
+# SELinux denials this boot (WARN only: desktop components can log
+# unrelated denials; a non-zero count is a prompt to investigate).
+# ==================================================================
+- name: Outcomes | Count SELinux AVC denials since boot
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      # --input-logs is required: without it ausearch reads STDIN whenever
+      # stdin is not a terminal, and Ansible gives modules a stdin pipe,
+      # so this always counted 0 (KNOWN_ISSUES #48).
+      ausearch --input-logs -m AVC,USER_AVC -ts boot 2>/dev/null | grep -c 'type=AVC' || true
+  register: verification_avc_count
+  changed_when: false
+
+- name: Outcomes | Summarise distinct SELinux AVC denials since boot
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      ausearch --input-logs -m AVC,USER_AVC -ts boot -i 2>/dev/null \
+        | grep -oE 'denied +\{[^}]+\}.*comm=[^ ]+|scontext=[^ ]+ tcontext=[^ ]+ tclass=[^ ]+' \
+        | paste - - | sed -E 's/ for +pid=[0-9]+//; s/ (path|name|dev|ino)=[^ ]+//g' \
+        | sort | uniq -c | sort -rn | head -15 || true
+  register: verification_avc_summary
+  changed_when: false
+  when: verification_avc_count.stdout | int > 0
+
+- name: Outcomes | Report SELinux AVC denials since boot
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'PASS' if verification_avc_count.stdout | int == 0 else 'WARN' }}:
+      {{ verification_avc_count.stdout }} AVC denial(s) since boot
+      {{ verification_avc_summary.stdout_lines | default([]) }}
+
+# ==================================================================
+# Vault Agent AppRole secret_id lifetime (WARN when < 14 days left)
+# ==================================================================
+- name: Outcomes | List AppRole secret_id accessors
+  ansible.builtin.uri:
+    url: "{{ verification_vault_addr }}/v1/auth/approle/role/vault-agent/secret-id"
+    method: LIST
+    headers:
+      X-Vault-Token: "{{ _vault_token_raw | default('') }}"
+    ca_path: "{{ verification_vault_ca }}"
+    status_code:
+      - 200
+      - 403
+      - 404
+  register: verification_approle_accessors
+  no_log: true
+  when: (_vault_token_raw | default('')) | length > 0
+
+- name: Outcomes | Look up AppRole secret_id expiry
+  ansible.builtin.uri:
+    url: "{{ verification_vault_addr }}/v1/auth/approle/role/vault-agent/secret-id-accessor/lookup"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token_raw | default('') }}"
+    body_format: json
+    body:
+      secret_id_accessor: "{{ item }}"
+    ca_path: "{{ verification_vault_ca }}"
+    status_code:
+      - 200
+  loop: "{{ verification_approle_accessors.json.data['keys'] | default([]) }}"
+  register: verification_approle_lookups
+  no_log: true
+  when: verification_approle_accessors.status | default(0) == 200
+
+- name: Outcomes | Compute days left on the AppRole secret_id
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      best=-1
+      for t in {{ verification_approle_lookups.results | default([])
+                  | selectattr('json', 'defined')
+                  | map(attribute='json.data.expiration_time') | map('quote') | join(' ') }}; do
+        e=$(date -d "$t" +%s 2>/dev/null || echo -1)
+        if [ "$e" -gt "$best" ]; then best=$e; fi
+      done
+      echo $(( (best - $(date +%s)) / 86400 ))
+  register: verification_approle_days
+  changed_when: false
+  when: verification_approle_lookups is not skipped
+
+- name: Outcomes | Report AppRole secret_id lifetime
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'PASS' if verification_approle_days.stdout | default('-1') | int >= 14 else 'WARN' }}:
+      Vault Agent AppRole secret_id expires in {{ verification_approle_days.stdout | default('?') }} day(s)
+      (auto-rotated below 30; force with `make vault-rotate-secret-id`)
+  when: verification_approle_days is not skipped

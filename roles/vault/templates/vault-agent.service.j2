@@ -23,6 +23,27 @@ ReadWritePaths={{ vault_cert_dir }}
 ReadWritePaths={{ vault_proxy_cert_dir }}
 PrivateTmp=yes
 NoNewPrivileges=yes
+# Sandboxing (KNOWN_ISSUES P23 / review finding E-10): the agent holds a
+# Vault token and renders private keys, so it gets the minimum capability
+# set, cannot dump core, and cannot see home directories.
+# CAP_IPC_LOCK is the only capability kept: the HashiCorp RPM installs
+# /usr/bin/vault with file capability cap_ipc_lock+ep, and the kernel
+# refuses to exec a binary whose effective file capabilities exceed the
+# bounding set ("Failed to execute /usr/bin/vault: Operation not
+# permitted" with an empty CapabilityBoundingSet= -- confirmed on
+# testfedora 2026-11-25). Same set as vault.service.
+CapabilityBoundingSet=CAP_IPC_LOCK
+AmbientCapabilities=
+LimitCORE=0
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target

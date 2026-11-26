@@ -26,6 +26,31 @@
     group: root
     mode: "0644"
 
+- name: Configure | Deploy pwhistory configuration (password reuse)
+  ansible.builtin.template:
+    src: pwhistory.conf.j2
+    dest: /etc/security/pwhistory.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Configure | Restrict su to the wheel group (pam_wheel)
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/su
+    regexp: '^#?\s*auth\s+required\s+pam_wheel\.so\s+use_uid'
+    line: "auth\t\trequired\tpam_wheel.so use_uid"
+    insertafter: '^auth\s+sufficient\s+pam_rootok\.so'
+  when: auth_su_wheel_only | bool
+
+- name: Configure | Deploy pam_access rules (access.conf)
+  ansible.builtin.template:
+    src: access.conf.j2
+    dest: /etc/security/access.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: auth_access_conf_enabled | bool
+
 - name: Configure | Ensure vault-ssh-helper config directory exists
   ansible.builtin.file:
     path: /etc/vault-ssh-helper.d
@@ -33,6 +58,16 @@
     owner: root
     group: root
     mode: "0755"
+  when: auth_vault_ssh_helper_enabled | bool
+
+- name: Configure | Pin vault-ssh-helper trust to the Vault Root CA
+  ansible.builtin.copy:
+    src: "{{ auth_vault_ssh_helper_ca_source }}"
+    dest: "{{ auth_vault_ssh_helper_ca_cert }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
   when: auth_vault_ssh_helper_enabled | bool
 
 - name: Configure | Deploy vault-ssh-helper configuration

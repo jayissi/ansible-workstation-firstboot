@@ -1,15 +1,23 @@
-module logrotate-vault 1.0;
+module logrotate-vault 1.1;
 
 require {
     type logrotate_t;
     type vault_log_t;
-    class dir { getattr open read search };
-    class file { create getattr open read rename unlink write };
+    class dir { getattr open read search write add_name remove_name };
+    class file { create getattr open read rename unlink write setattr ioctl };
 }
 
 # Allow logrotate to rotate Vault audit log files that carry the
 # vault_log_t SELinux label.  Without this policy, logrotate running
 # under the logrotate_t domain cannot stat or manipulate files in
 # /var/log/vault, causing logrotate.service to fail.
-allow logrotate_t vault_log_t:dir { getattr open read search };
-allow logrotate_t vault_log_t:file { create getattr open read rename unlink write };
+#
+# 1.1 (2026-11-25): permission set captured from two forced rotations in
+# a permissive logrotate_t window (copytruncate -> audit.log.1, rename
+# .1 -> .2, delaycompress gzip -> .2.gz): directory write/add_name/
+# remove_name to create and remove rotated files, file setattr for the
+# rotated copy's mode/owner, ioctl for gzip's isatty() probe. 1.0 only
+# granted read-side access -- and was never compiled/loaded at all (the
+# handler built vault.pp only), so rotation had never worked.
+allow logrotate_t vault_log_t:dir { getattr open read search write add_name remove_name };
+allow logrotate_t vault_log_t:file { create getattr open read rename unlink write setattr ioctl };

@@ -1,0 +1,29 @@
+policy_module(staff-systemd-user, 1.0.0)
+
+# Harmless denials produced by the confined admin (staff_u, sudo into
+# sysadm_r/sysadm_t) -- all found by the post-reboot sweep, 2026-11-25.
+#
+# 1. The admin's systemd --user manager (staff_t) creates inaccessible
+#    placeholder nodes under /run/user/<uid>/systemd/inaccessible/ and
+#    chmods them to 0000. The setattr on the user_tmp_t "chr" node is
+#    denied at every login. The node is the user's own tmpfs file, so
+#    allowing setattr grants nothing beyond what staff_t already owns.
+# 2. systemd-creds (run by Ansible as sysadm_t for the TPM2+age root
+#    token decrypt) tries an optional entropy write-back to /dev/urandom.
+#    The decrypt succeeds without it: dontaudit, nothing granted.
+# 3. systemd-tmpfiles run via Ansible inherits a pipe from the staff_t
+#    SSH session (leaked descriptor): dontaudit, nothing granted.
+
+require {
+    type staff_t;
+    type sysadm_t;
+    type user_tmp_t;
+    type urandom_device_t;
+    type systemd_tmpfiles_t;
+    class chr_file { setattr write };
+    class fifo_file read;
+}
+
+allow staff_t user_tmp_t:chr_file setattr;
+dontaudit sysadm_t urandom_device_t:chr_file write;
+dontaudit systemd_tmpfiles_t staff_t:fifo_file read;

@@ -31,20 +31,26 @@ repos:
     rev: v2.3.0
     hooks:
       - id: codespell
+        # --toml (not --config): --config parses the file as INI, which
+        # breaks on multi-line TOML arrays. CI reads [tool.codespell] the
+        # same way via tomllib.
         args:
-          - --config
+          - --toml
           - pyproject.toml
 
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: v0.10.0.1
     hooks:
       - id: shellcheck
-        files: ^roles/common/files/(bin|bashrc\.d)/
+        files: ^(roles/common/files/(bin|bashrc\.d)/|tests/.*\.sh$|lint/.*\.sh$)
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.24.2
     hooks:
       - id: gitleaks
+        args:
+          - --config
+          - lint/.gitleaks.toml
 
   - repo: https://github.com/Yelp/detect-secrets
     rev: v1.5.0
@@ -71,18 +77,23 @@ repos:
           - --config
           - lint/.markdownlint-cli2.yaml
 
-  - repo: https://github.com/hadolint/hadolint
-    rev: v2.12.0
-    hooks:
-      - id: hadolint-docker
-
   - repo: local
     hooks:
+      # Upstream "hadolint-docker" needs the docker CLI (absent on
+      # podman-only Fedora hosts) and ignored lint/.hadolint.yaml. Same
+      # command and Fedora package as CI (dnf install hadolint), like the
+      # shfmt/selint hooks below.
+      - id: hadolint
+        name: hadolint (Containerfile lint)
+        entry: hadolint --config lint/.hadolint.yaml
+        language: system
+        types:
+          - dockerfile
       - id: shfmt
         name: shfmt (format check)
         entry: shfmt -d
         language: system
-        files: ^roles/common/files/(bin|bashrc\.d)/
+        files: ^(roles/common/files/(bin|bashrc\.d)/|tests/.*\.sh$|lint/.*\.sh$)
       - id: selint
         name: selint (SELinux policy lint)
         entry: selint

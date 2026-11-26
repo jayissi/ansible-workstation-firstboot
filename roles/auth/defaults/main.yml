@@ -36,11 +36,35 @@ auth_pwquality_retry: 3
 # pwhistory -- CIS 5.3.3.3.1 (password reuse)
 # ---------------------------------------------------------------------------
 auth_pwhistory_remember: 24
+auth_pwhistory_enforce_for_root: true
+
+# ---------------------------------------------------------------------------
+# su restricted to the wheel group -- CIS 5.2.7 (pam_wheel in /etc/pam.d/su)
+# ---------------------------------------------------------------------------
+auth_su_wheel_only: true
+
+# ---------------------------------------------------------------------------
+# pam_access (/etc/security/access.conf). authselect's with-pamaccess puts
+# pam_access in the account stack of system-auth/password-auth, so these
+# rules gate SSH, sudo, su, GDM and cron. First match wins; the final rule
+# denies everyone else. "LOCAL" matches any origin without a dot (ttys,
+# ":0", cron, and sudo without a tty -- which is how Ansible runs).
+# ---------------------------------------------------------------------------
+auth_access_conf_enabled: true
+auth_access_rules:
+  - "+:root:LOCAL"
+  - "+:gdm:LOCAL"
+  - "+:{{ common_admin_user | default('root') }}:LOCAL {{ (ssh_allowed_sources | default([])) | map(attribute='ip') | join(' ') }}"
+  - "+:ALL:cron crond"
+  - "-:ALL:ALL"
 
 # ---------------------------------------------------------------------------
 # nsswitch.conf hosts line (post-authselect override)
 # ---------------------------------------------------------------------------
-auth_nsswitch_hosts: "files mdns_minimal [NOTFOUND=return] myhostname dns"
+# [NOTFOUND=continue] (KNOWN_ISSUES P21): an mDNS miss falls through to
+# Unbound instead of ending resolution. The dns role writes the same line
+# via this variable so the two roles no longer fight over nsswitch.conf.
+auth_nsswitch_hosts: "files mdns_minimal [NOTFOUND=continue] myhostname dns"
 
 # ---------------------------------------------------------------------------
 # vault-ssh-helper (OTP validation via Vault SSH secrets engine)
@@ -53,7 +77,13 @@ auth_vault_ssh_helper_version: "0.2.4"
 auth_vault_ssh_helper_checksum: "1fd74ccfe4de134dcc527771c9eaaa2f95756975c11baff136eecdbe56bd0e1d"
 auth_vault_ssh_helper_addr: "https://127.0.0.1:8200"
 auth_vault_ssh_helper_mount: "ssh-otp"
-auth_vault_ssh_helper_ca_cert: "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
+# Pinned to the Vault Root CA only (not the whole system bundle). It is a
+# copy in /etc/vault-ssh-helper.d (etc_t) because sshd_session_t cannot read
+# /etc/vault.d/certs (vault_conf_t, 0700).
+auth_vault_ssh_helper_ca_source: /etc/vault.d/certs/root.crt
+auth_vault_ssh_helper_ca_cert: /etc/vault-ssh-helper.d/vault-ca.pem
+# Only the daily OTP role may be validated by this host (was "*").
+auth_vault_ssh_helper_allowed_roles: "daily"
 
 # ---------------------------------------------------------------------------
 # FIDO2/U2F placeholder (future -- see backlog)

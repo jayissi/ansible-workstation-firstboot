@@ -6,6 +6,8 @@
   ansible.builtin.stat:
     path: "{{ vault_cert_dir }}/root.crt"
   register: vault_pki_initialized
+  tags:
+    - always
 
 - name: Include Vault installation
   ansible.builtin.include_tasks: install.yml
@@ -13,6 +15,19 @@
 - name: Include TLS bootstrap (only on first run)
   ansible.builtin.include_tasks: tls_bootstrap.yml
   when: not vault_pki_initialized.stat.exists
+
+# TLS trust bundle for every Vault API call this role makes (KNOWN_ISSUES
+# P24 -- replaces validate_certs: false). See _api_trust.yml for why it is
+# a bundle. All Vault certs carry IP:127.0.0.1, so https://127.0.0.1:8200
+# validates at every stage.
+- name: Assemble Vault API TLS trust bundle
+  ansible.builtin.include_tasks:
+    file: _api_trust.yml
+    apply:
+      tags:
+        - always
+  tags:
+    - always
 
 - name: Include Vault configuration
   ansible.builtin.include_tasks: configure.yml
@@ -31,6 +46,11 @@
 
 - name: Include Vault Agent configuration
   ansible.builtin.include_tasks: agent.yml
+
+# Vault Agent may have reloaded Vault onto an Agent-issued production
+# chain by now; refresh the bundle before the production TLS tasks.
+- name: Refresh Vault API TLS trust bundle after Vault Agent start
+  ansible.builtin.include_tasks: _api_trust.yml
 
 - name: Include production TLS and finalization
   ansible.builtin.include_tasks: tls_production.yml

@@ -17,51 +17,26 @@ certification_authority: "{{ __dns_tls_cert_bundle }}"
 # Wired interfaces get priority over wireless
 prioritize_wire: yes
 
-# Logging
-stderr_log: yes
-syslog_log: yes
+# Logging -- to the journal. Note: syslog_log takes a destination STRING
+# ("unix:/dev/log" or "udp:host:port"), not a boolean. The old
+# `syslog_log: yes` crashed dnsconfd at start-up the moment this file was
+# actually read (it never was before -- see KNOWN_ISSUES #38).
+journal_log: yes
 
 # ---------------------------------------------------------------------------
-# Static upstream DoT servers (8 servers, 3 providers)
-# Order: Quad9 (threat intel) -> Cloudflare (malware filter) -> Google (fallback)
+# Static upstream DoT servers -- from dns_dot_upstreams (roles/dns defaults).
+# Every upstream applies threat filtering, so failover never weakens policy
+# (KNOWN_ISSUES P15: Google removed). The same list feeds the firewalld
+# dot-egress policy (P16), so the two cannot drift.
 # ---------------------------------------------------------------------------
 static_servers:
-  # Quad9 -- threat intelligence from 25+ feeds, Swiss jurisdiction, no logging
-  - address: "9.9.9.9"
+{% for upstream in dns_dot_upstreams %}
+  # {{ upstream.comment | default(upstream.name) }}
+  - address: "{{ upstream.address }}"
     protocol: "dns+tls"
-    name: "dns.quad9.net"
+    name: "{{ upstream.name }}"
     dnssec: true
-  - address: "149.112.112.112"
-    protocol: "dns+tls"
-    name: "dns.quad9.net"
-    dnssec: true
-  # Quad9 + ECS -- threat blocking with EDNS Client Subnet
-  - address: "9.9.9.11"
-    protocol: "dns+tls"
-    name: "dns.quad9.net"
-    dnssec: true
-  - address: "149.112.112.11"
-    protocol: "dns+tls"
-    name: "dns.quad9.net"
-    dnssec: true
-  # Cloudflare -- malware-filtering variant
-  - address: "1.1.1.2"
-    protocol: "dns+tls"
-    name: "cloudflare-dns.com"
-    dnssec: true
-  - address: "1.0.0.2"
-    protocol: "dns+tls"
-    name: "cloudflare-dns.com"
-    dnssec: true
-  # Google -- broad DNSSEC coverage (last-resort fallback)
-  - address: "8.8.8.8"
-    protocol: "dns+tls"
-    name: "dns.google"
-    dnssec: true
-  - address: "8.8.4.4"
-    protocol: "dns+tls"
-    name: "dns.google"
-    dnssec: true
+{% endfor %}
 
 # RPZ is configured in Unbound conf.d directly, not here (see ADR-0004)
 

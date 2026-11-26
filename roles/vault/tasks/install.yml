@@ -104,7 +104,11 @@
   # was always true. Also must not match "sshd-vault-ssh-helper", which
   # legitimately contains "vault" as a substring. Confirmed via runtime
   # testing (cat -A on the real output).
-  changed_when: "'vault' not in __vault_selinux_loaded.stdout_lines"
+  # Both project modules must be loaded (logrotate-vault was added later;
+  # hosts deployed before it was built need the handler to run once).
+  changed_when: >-
+    'vault' not in __vault_selinux_loaded.stdout_lines
+    or 'logrotate-vault' not in __vault_selinux_loaded.stdout_lines
   failed_when: false
   notify: Compile and install Vault SELinux policy
 
@@ -122,6 +126,16 @@
 
 - name: Install | Apply Vault SELinux policy module immediately
   ansible.builtin.meta: flush_handlers
+
+# After the flush: vault_cluster_port_t only exists once the module is
+# loaded. Still precedes Vault's first start (init.yml).
+- name: Install | Label Vault TCP ports as vault_cluster_port_t
+  community.general.seport:
+    ports: "{{ vault_selinux_ports | join(',') }}"
+    proto: tcp
+    setype: vault_cluster_port_t
+    state: present
+  notify: Restart vault
 
 - name: Install | Restore SELinux contexts for Vault paths
   ansible.builtin.command:
@@ -161,11 +175,14 @@
   ansible.builtin.copy:
     dest: /etc/tmpfiles.d/vault-run.conf
     content: |
-      # Clean transient vault secrets on boot
+      # Remove transient vault secrets (Agent-rendered cert+key bundles)
+      # on boot. "r" (remove), not "e": "e" only adjusts directories, so
+      # the *.tmp files survived reboots and each boot logged "already
+      # exists and is not a directory". vault-agent re-renders on start.
       d {{ vault_run_dir }} 0700 root root - -
-      e {{ vault_run_dir }}/*.tmp 0 root root 0 -
+      r {{ vault_run_dir }}/*.tmp
       d {{ vault_agent_run_dir }} 0700 {{ vault_user }} {{ vault_group }} - -
-      e {{ vault_agent_run_dir }}/*.tmp 0 {{ vault_user }} {{ vault_group }} 0 -
+      r {{ vault_agent_run_dir }}/*.tmp
     owner: root
     group: root
     mode: "0644"

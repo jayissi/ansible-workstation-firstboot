@@ -17,7 +17,7 @@ Phase 1: Bootstrap
   vault      -> install, bootstrap TLS, init, PKI, Agent, browser trust,
                 SSH secrets engine (OTP + Ed25519 CA break-glass),
                 TLS client cert auth, OIDC Identity Provider, VaultPass
-  proxy      -> Nginx reverse proxy (https://vault.local -> :8200),
+  proxy      -> Nginx reverse proxy (https://vault.internal -> :8202 mTLS),
                 SSH credential gateway (:8443, OTP + CA paths only)
 
 Phase 2: Harden (secrets from Vault)
@@ -55,9 +55,11 @@ make venv     # Create venv, install ansible-core, download Galaxy roles
 source .venv/bin/activate
 ansible workstation -m ping   # Verify connectivity
 make lint                     # Auto-fix, then run all linters (Podman container)
+make ci                       # Dry run of GitHub Actions lint (run before every push)
 make test                     # Syntax check
 make deploy                   # Full deployment
-make verify                   # Post-deploy assertions
+make verify                   # Post-deploy assertions (incl. control-effectiveness checks)
+make validate                 # verify + security tests + bastion tests + idempotency
 ```
 
 ## PKI Configuration
@@ -74,7 +76,7 @@ vault_pki_key_bits: 384       # P-384 curve size (CNSA 2.0)
 
 ## Vault Access
 
-Open a browser on the workstation: `https://vault.local`
+Open a browser on the workstation: `https://vault.internal`
 
 ```bash
 sudo vault-admin status                        # Vault health + seal status
@@ -87,16 +89,22 @@ passphrase fallback, then plaintext (first-run only).
 ## Security Summary
 
 - GRUB2 password-protected, `audit=1`, LUKS full-disk encryption
-- SSH: key-only, no root login, Ed25519, AllowUsers, banner,
-  Vault OTP (verified end-to-end) + Ed25519 CA break-glass,
-  credential gateway (:8443)
+- SSH: key or Vault OTP, no root login, Ed25519, AllowUsers, banner,
+  agent forwarding off, Ed25519 CA break-glass, credential gateway
+  (:8443, bastion mTLS, POST/PUT only, Host allow-list)
 - Auth: TLS client cert primary (TPM2-bound P-384 via PKCS#11),
-  authselect sssd profile, faillock, pwquality, pwhistory,
-  vault-ssh-helper PAM integration, Vault OIDC Identity Provider
+  authselect sssd profile, faillock, pwquality, pwhistory (24),
+  pam_access default deny, su wheel-only, vault-ssh-helper PAM
+  integration (pinned CA, `daily` role only), Vault OIDC Identity Provider
+- Session (CIS): idle shell timeout (`common_shell_timeout`, 3600 s),
+  GNOME screen lock + GDM banner, cron/at allow-lists
 - Browser: VaultPass extension + uBlock Origin (private mode)
-- DNS: DNSSEC + DoT (8 servers), ~76K blocklist, port 53 blocked,
-  browser DoH bypass prevented
-- Firewall: zone target DROP, service-specific allow rules only
+- DNS: DNSSEC + DNS-over-TLS (Quad9 + Cloudflare malware-filtering;
+  outbound 853 pinned to them), oisd RPZ + independent core blocklist,
+  `.internal` service names (ADR-0008), port 53 blocked, browser DoH
+  bypass prevented
+- Firewall: interface bound to the DROP zone; SSH and :8443 only from
+  the bastion; denied packets logged
 - SELinux enforcing: `staff_u` admin, custom `vault_t` policy
 - fapolicyd: SHA-256 integrity, RPM + trusted binaries only
 - Vault CE: ECDSA P-384 (CNSA 2.0) TLS, full-chain consistency
@@ -109,7 +117,13 @@ passphrase fallback, then plaintext (first-run only).
   deprecated); VM guests skip hardware-specific tasks
 - AIDE: daily integrity checks, baseline init gated on database
   existence (prevents silent resets), initialized after all hardening
-- Auditd: 50 CIS/NIST/STIG-aligned rules, immutable config (`-e 2`)
+- Auditd: CIS/NIST/STIG-aligned rules plus watches on PAM, SSSD,
+  firewalld, systemd units, polkit, /usr/local/bin and crypto policy
+- Platform: crypto policy `DEFAULT:NO-SHA1-MAC`, NTS-only time sources,
+  kexec disabled, IPv6 RA ignored, systemd sandboxing for nginx /
+  unbound / dnsconfd / vault-agent
+- Nginx: no :80 listener, `Cache-Control: no-store`, JSON access logs,
+  CSP violation reporting
 
 See [SECURITY.md](SECURITY.md) for the full security model and
 vulnerability reporting policy.
@@ -122,6 +136,7 @@ ansible-playbook playbooks/site.yml --tags harden
 ansible-playbook playbooks/site.yml --tags verify
 ansible-playbook playbooks/site.yml --skip-tags aide
 make vault-rotate-root-token   # Rotate root token (on-demand)
+make vault-rotate-secret-id    # Rotate the Vault Agent AppRole secret_id (on-demand)
 ```
 
 ## Project Structure
@@ -141,21 +156,23 @@ ansible-workstation-firstboot/
     common/ dns/ avahi/ auth/    # Custom roles (7 total)
     vault/ proxy/ verification/
     requirements.yml             # Galaxy roles (gitignored after download)
-  lint/                          # All linter configs + Podman container
+  lint/                          # All linter configs + Podman container (make lint / make ci)
+  tests/                         # security-test.sh, bastion-test.sh, idempotency.sh
   docs/                          # Architecture, known issues, ADRs
 ```
 
 ## Further Documentation
 
-| Document                                     | Description                                     |
-|----------------------------------------------|-------------------------------------------------|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Service roles, config ownership, phase ordering |
-| [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) | Troubleshooting knowledge base                  |
-| [docs/decisions/](docs/decisions/)           | Architectural Decision Records (MADR)           |
-| [docs/CONVENTIONS.md](docs/CONVENTIONS.md)   | Naming, style, and linter conventions           |
-| [SECURITY.md](SECURITY.md)                   | Security model and vulnerability reporting      |
-| [CONTRIBUTING.md](CONTRIBUTING.md)           | Development setup and workflow                  |
-| [CHANGELOG.md](docs/CHANGELOG.md)            | Release history                                 |
+| Document                                     | Description                                       |
+|----------------------------------------------|---------------------------------------------------|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Service roles, config ownership, phase ordering   |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md)     | Runbooks: bastion, validation, rotation, rollback |
+| [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) | Troubleshooting knowledge base + backlog status   |
+| [docs/decisions/](docs/decisions/)           | Architectural Decision Records (MADR)             |
+| [docs/CONVENTIONS.md](docs/CONVENTIONS.md)   | Naming, style, and linter conventions             |
+| [SECURITY.md](SECURITY.md)                   | Security model and vulnerability reporting        |
+| [CONTRIBUTING.md](CONTRIBUTING.md)           | Development setup and workflow                    |
+| [CHANGELOG.md](docs/CHANGELOG.md)            | Release history                                   |
 
 ## License
 

@@ -1,0 +1,13 @@
+{{ ansible_managed | default('Ansible managed') | comment }}
+# Loopback-only sink for CSP violation reports (KNOWN_ISSUES P29).
+# vault-proxy.conf proxies POST /csp-report here so nginx reads (and logs)
+# the request body; this server just acknowledges with 204.
+server {
+    listen 127.0.0.1:{{ proxy_csp_sink_port }};
+    server_name _;
+    access_log off;
+
+    location / {
+        return 204;
+    }
+}

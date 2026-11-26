@@ -10,7 +10,7 @@ local-data: "{{ record }}"
 {% endfor %}
 {% for data in dns_local_data %}
 # Local data: {{ data.name }}
-local-data: "{{ data.name }}. IN {{ data.type }} {{ data.value }}"
+local-data: "{{ data.name }}. {{ data.ttl | default(dns_local_data_ttl) }} IN {{ data.type }} {{ data.value }}"
 {% endfor %}
 {% if dns_local_data_ptr | length > 0 %}
 

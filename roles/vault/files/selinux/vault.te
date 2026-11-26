@@ -1,4 +1,4 @@
-policy_module(vault, 1.4.0)
+policy_module(vault, 1.5.0)
 
 ########################################
 #
@@ -129,7 +129,7 @@ allow vault_t vault_conf_t:file { create getattr setattr open read write rename 
 allow vault_t vault_conf_t:dir { search add_name remove_name write getattr read open };
 
 # Vault Agent writes proxy cert files to /etc/nginx/certs/ (httpd_config_t)
-# via vault-agent-split-proxy-cert. Separate leaf cert for Nginx (vault.local
+# via vault-agent-split-proxy-cert. Separate leaf cert for Nginx (proxy hostname
 # SAN only), isolating Nginx's TLS identity from Vault's.
 allow vault_t httpd_config_t:file { create getattr setattr open write rename unlink };
 allow vault_t httpd_config_t:dir { search add_name remove_name write getattr open };
@@ -164,6 +164,13 @@ kernel_read_system_state(vault_t)
 # secret_id file after reading it (remove_secret_id_file_after_reading).
 allow vault_t vault_sys_content_t:dir { add_name remove_name create getattr open read write search };
 allow vault_t vault_sys_content_t:file { create getattr setattr lock map open read write rename unlink };
+
+# 1.5.0: the Agent's cert-split scripts run awk (in vault_t), which
+# probes isatty() (ioctl TCGETS) on every file it reads/writes: the
+# *-combined.tmp bundles and the *.new cert/key files. Writes succeed;
+# only the probe is denied. dontaudit (not allow) -- grants nothing,
+# silences the AVC that appears on every boot and cert rotation.
+dontaudit vault_t { vault_sys_content_t vault_conf_t httpd_config_t }:file ioctl;
 
 # Need to access log files
 allow vault_t vault_log_t:dir { getattr search write add_name };

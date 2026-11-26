@@ -16,8 +16,8 @@ workstation.
    │  1. vault ssh -mode=otp        │
    │     (requests OTP via          │
    │      HTTPS :8443 gateway)      │
-   ├──────────────────────────────►  │  Nginx SSH gateway
-   │                                │  → Vault 127.0.0.1:8200
+   ├──────────────────────────────►  │  Nginx SSH gateway (mTLS)
+   │                                │  → Vault 127.0.0.1:8202
    │  2. SSH to port 22 with OTP    │
    ├──────────────────────────────►  │  sshd + pam_exec
    │                                │  → vault-ssh-helper validates
@@ -33,6 +33,31 @@ two Vault API paths:
 
 All other paths return HTTP 403. Vault itself remains bound to
 `127.0.0.1:8200` and is never directly reachable from the network.
+
+The gateway requires **mutual TLS** (KNOWN_ISSUES P26): the bastion must
+present a client certificate issued by the Vault Intermediate CA with
+`OU=Bastion Gateway`. Only `POST`/`PUT` are accepted on the two paths,
+and any `Host` other than the workstation's address or
+`vault-ssh-gateway.internal` is closed (444).
+
+### Bastion Client Certificate
+
+`make deploy` issues the bastion certificate (PKI role
+`bastion-gateway-client`, 30-day TTL) and writes it to the
+**controller only**, in the gitignored `.bastion/` directory. It is
+reissued automatically on any deploy within 7 days of expiry. The private
+key is never written to the workstation.
+
+```bash
+# On the bastion (here: the Ansible controller itself)
+install -d -m 0700 ~/.config/vault-bastion
+install -m 0644 .bastion/client.crt ~/.config/vault-bastion/client.crt
+install -m 0600 .bastion/client.key ~/.config/vault-bastion/client.key
+```
+
+To revoke a bastion certificate: `vault write pki_int/revoke
+serial_number=<serial>`, then run `sudo /usr/local/bin/nginx-crl-update`
+on the workstation (see CRL Emergency Revocation below).
 
 ### Prerequisites
 
@@ -73,8 +98,10 @@ or use it directly:
 vault-ssh-target jayissi@workstation
 ```
 
-The wrapper sets `VAULT_ADDR` to `https://<target-ip>:8443` and
-`VAULT_CACERT` to the system CA bundle, then runs:
+The wrapper sets `VAULT_ADDR` to `https://<VAULT_GATEWAY>:8443`
+(set `VAULT_GATEWAY` to the workstation's IP when running on the
+bastion), `VAULT_CACERT` to the system CA bundle, and `VAULT_CLIENT_CERT`
+/ `VAULT_CLIENT_KEY` from `~/.config/vault-bastion/`, then runs:
 
 ```bash
 vault ssh -mode=otp -role=daily -mount-point=ssh-otp <user>@<host>
@@ -306,7 +333,7 @@ modutil -list -dbdir sql:$HOME/.pki/nssdb
 curl --cert /path/to/client-cert.pem \
      --key /path/to/client-key.pem \
      --cacert /etc/pki/ca-trust/source/anchors/vault-root-ca.crt \
-     https://vault.local/v1/auth/cert/login
+     https://vault.internal/v1/auth/cert/login
 ```
 
 ---
@@ -319,7 +346,7 @@ Vault instance.
 
 ### Prerequisites
 
-- Vault is running, unsealed, and accessible at `https://vault.local`
+- Vault is running, unsealed, and accessible at `https://vault.internal`
 - The `vaultpass.yml` task has seeded the KV store and created the
   `vaultpass` policy
 - `cert_auth.yml` has configured the TLS certificate auth method
@@ -341,7 +368,7 @@ so TLS client auth completes without user prompts:
 ### First-Use Token Acquisition
 
 1. Open Firefox or Chrome and navigate to
-   `https://vault.local/ui/vault/auth?with=cert` (deployed as a
+   `https://vault.internal/ui/vault/auth?with=cert` (deployed as a
    managed bookmark)
 2. The browser automatically selects the client certificate during the
    TLS handshake (no user prompt)
@@ -378,7 +405,7 @@ VaultPass token.
 #### Step 1 — Navigate to Vault
 
 Open Firefox or Chrome and navigate to
-`https://vault.local/ui/vault/auth?with=cert`. This URL is deployed
+`https://vault.internal/ui/vault/auth?with=cert`. This URL is deployed
 as a managed bookmark and preselects the **TLS Certificates** auth
 method.
 
@@ -395,6 +422,31 @@ certificate during the TLS handshake (triggered by Nginx's
 > **Note:** If certificate auto-selection fails, verify the client
 > cert is enrolled in the browser's NSS database. See the TPM2 Client
 > Certificate Enrollment section above.
+
+#### Browser certificate renewal (automatic)
+
+Vault Agent renews the client certificate every 72h.
+`vault-browser-cert-sync` (root oneshot) re-imports it as
+**VaultPass Client Cert** into `~/.pki/nssdb` (Chrome/Chromium) and
+every Firefox profile of the users in `vault_browser_cert_sync_users`:
+
+| Trigger                         | When                                                                |
+|---------------------------------|---------------------------------------------------------------------|
+| `vault-browser-cert-sync.path`  | Agent rewrites `/etc/vault.d/certs/client.crt`                      |
+| `vault-browser-cert-sync.timer` | 2 min after boot, then every 15 min (new Firefox profiles, retries) |
+| Playbook (Phase 3)              | Every `make deploy`                                                 |
+
+It compares serials and imports only when they differ, removes the
+previous certificate and its private key, and never closes browsers.
+A database that is locked or protected by a primary password is
+logged and retried on the next timer run. A browser that is already
+open may need a restart to offer the new certificate.
+
+```bash
+cat /run/vault-browser-cert-sync.status        # imported=N current=N failed=N
+journalctl -u vault-browser-cert-sync -n 20
+sudo systemctl start vault-browser-cert-sync   # force a sync now
+```
 
 #### Step 3 — Sign in with TLS Certificates
 
@@ -522,9 +574,9 @@ revoked. Verify the CRL was updated:
 
 ```bash
 # Check the CRL last-update timestamp
-curl -s --resolve vault.local:8200:127.0.0.1 \
+curl -s --resolve vault.internal:8200:127.0.0.1 \
   --cacert /etc/nginx/certs/root.crt \
-  https://vault.local:8200/v1/pki_int/crl/pem | \
+  https://vault.internal:8200/v1/pki_int/crl/pem | \
   openssl crl -noout -lastupdate -nextupdate
 ```
 
@@ -548,7 +600,7 @@ the backup.
 curl -v --cert /path/to/revoked-cert.pem \
      --key /path/to/revoked-key.pem \
      --cacert /etc/pki/ca-trust/source/anchors/vault-root-ca.crt \
-     https://vault.local/v1/sys/health
+     https://vault.internal/v1/sys/health
 ```
 
 The connection should be rejected by Nginx (HTTP 400 or TLS handshake
@@ -589,11 +641,16 @@ communications.
 
 ### Operational Notes
 
-- Both listeners share the same server TLS certificate and
-  `x_forwarded_for_*` configuration
+- Both listeners share the same server TLS certificate, but the
+  `x_forwarded_for_*` (forwarded client-certificate) trust is configured
+  **only on 8202** -- on 8200 it would let any local process forge
+  `X-Client-Cert` (review finding E-02; regression test T-01)
 - SELinux port label (`vault_cluster_port_t`) is applied to 8202 via
   `semanage port`
-- Firewall rich rule restricts 8202 to loopback only
+- Both listeners bind `127.0.0.1` only. (There is no firewall rule for
+  them: firewalld accepts all loopback traffic before zone rules, so the
+  old "restrict to loopback" rich rules never had an effect and were
+  removed.)
 - If Vault restarts, both listeners come up together — no separate
   service management is needed
 - `proxy_backend_url` in `inventory/group_vars/all/main.yml` points
@@ -619,58 +676,142 @@ curl -s --cacert /etc/nginx/certs/root.crt \
 
 ---
 
-## Security Regression Test Suite
+## Validation and Pre-Push Checks
 
-The `make security-test` target runs an automated security regression
-test suite that validates Nginx and Vault security controls.
+### Before pushing: `make ci`
 
-### Usage
+`make ci` is a local dry run of the GitHub Actions lint workflow
+(`lint/ci-local.sh`). It snapshots what would be pushed (tracked files
+with uncommitted edits plus new non-ignored files), builds the lint image
+from that snapshot with fresh tool versions, and runs every CI check in
+verify-only mode (no auto-fix, no bind mount). If `make ci` passes, the
+GitHub `lint.yml` jobs should pass.
 
 ```bash
-# Run the full security test suite
-make security-test
+make ci        # ~5-10 min; exit 0 = all CI-equivalent checks passed
+make lint      # faster local loop: auto-fixes, lints the working tree
 ```
 
-The test script requires the system to be fully deployed with Vault
-unsealed and Nginx running.
+### After deploying: `make validate`
 
-### Test Coverage
+```bash
+make deploy
+make validate
+```
 
-The suite includes both **negative assertions** (things that must
-fail) and **positive assertions** (things that must succeed):
+`make validate` runs, in order:
 
-**Negative tests:**
+1. `make verify` -- the verification role, including the outcome checks
+   in `roles/verification/tasks/outcomes.yml` (firewall zone in effect,
+   DoT forwarders, DNSSEC, CRL freshness, no :80 listener, 8200 header
+   trust removed, certificate SANs, auth/CIS controls, crypto policy,
+   NTS, sandboxing)
+2. `make security-test` -- `tests/security-test.sh` on the workstation
+3. `make bastion-test` -- `tests/bastion-test.sh` from the controller,
+   using the `.bastion/` client certificate
+4. `make idempotency` -- re-runs the playbook and fails if the
+   `changed=` total exceeds `VALIDATE_MAX_CHANGED` (vendored roles always
+   report some changes; see KNOWN_ISSUES "Vendor-Role Non-Idempotency")
 
-- Unknown `Host` header returns 444 (connection closed by
-  default-deny vhost)
-- TLS 1.1 connection is rejected (only TLS 1.2+ allowed)
-- Oversized request body returns 413
-- Non-allowed SSH gateway path returns 403
-- Security headers are present (HSTS, X-Content-Type-Options,
-  X-Frame-Options, etc.)
-- Forged `X-Client-Cert` header is rejected (header sanitization)
+### Security Regression Tests (`make security-test`)
 
-**Positive tests:**
+Runs on the workstation as root. Negative tests (must be blocked):
 
-- Health endpoint returns 200
-- Vault UI is accessible (200 or 307 redirect)
-- SSH gateway allowed paths are reachable
+- Unknown `Host` / SNI → connection closed (default-deny, 444)
+- TLS 1.1 → rejected
+- Plain HTTP on :80 → nothing listening
+- SSH gateway without a client certificate → refused (P26)
+- SSH gateway with a valid but non-bastion certificate → 403 (P26)
+- Security headers present (HSTS, X-Frame-Options, nosniff) and
+  `Cache-Control: no-store` (P32)
+- Forged `X-Client-Cert` through Nginx → not authenticated
+- **T-01:** forged `X-Forwarded-For` + the REAL VaultPass public
+  certificate in `X-Client-Cert`, sent straight to Vault on 8200 → no
+  token issued (review finding E-02)
 
-### Output
+Positive tests (must succeed): health endpoint 200, Vault UI 200/307,
+CSP report endpoint 204 and logged (P29), access log is valid JSON
+(P31).
 
-The script prints a pass/fail summary for each test and exits with
-code 0 if all tests pass, non-zero otherwise. Output is suitable for
-CI integration.
+### Bastion-side Gateway Tests (`make bastion-test`)
+
+Run from the controller (which is also the bastion here) against
+`https://<workstation>:8443` with the `.bastion/` certificate: no
+certificate → refused; bastion certificate → allowed path reaches
+Vault; `DELETE` → 403 (P27); other paths → 403; unknown `Host` → closed
+(P28).
 
 ### Debugging Failures
-
-If a test fails, check:
 
 1. Nginx is running: `systemctl status nginx`
 2. Vault is unsealed: `vault status`
 3. TLS certificates are valid: `openssl s_client -connect 127.0.0.1:443`
 4. CRL is current: `openssl crl -in /etc/nginx/certs/client-ca.crl -noout -nextupdate`
-5. Nginx config is valid: `nginx -t`
+5. Nginx config is valid (in nginx's own SELinux domain):
+   `systemd-run --wait --pipe --collect /usr/sbin/nginx -t`
+6. Firewall zone: `firewall-cmd --get-zone-of-interface=<iface>`
+7. DoT forwarders: `journalctl -u dnsconfd -b | grep 'Unbound updated'`
+
+---
+
+## Hostname Migration (`.local` → `.internal`)
+
+Service names moved to `.internal` ([ADR-0008](decisions/ADR-0008-internal-namespace.md)).
+Fresh deploys need nothing extra. To migrate an **existing** host in
+place:
+
+1. Run `make deploy`. Nginx `server_name`, Unbound `local-data`,
+   `/etc/hosts` (the legacy `vault.local` line is removed), browser
+   policies and the CRL script all follow the new variables.
+2. Force certificate reissue so the SANs carry the new names:
+
+   ```bash
+   sudo systemctl restart vault-agent        # re-renders Agent-managed certs
+   sudo rm /etc/nginx/certs/server-chain.crt /etc/nginx/certs/server.key
+   make deploy                               # reissues the Nginx cert
+   ```
+
+3. In each browser, update the Vault URL saved in the VaultPass
+   extension to `https://vault.internal`.
+4. `make validate` -- the outcome checks assert the certificates carry
+   `vault.internal`.
+
+---
+
+## Vault Agent AppRole `secret_id` Rotation
+
+The Agent's AppRole `secret_id` has a bounded lifetime
+(`vault_approle_secret_id_ttl`, default 90 days) and is bound to
+127.0.0.1. Every deploy checks the remaining lifetime and rotates it
+automatically when less than 30 days remain
+(`vault_approle_secret_id_rotate_before_seconds`); a legacy
+never-expiring `secret_id` is rotated once. Rotation re-encrypts
+`/root/vault-approle-secret.age` atomically, destroys the superseded
+accessors and restarts `vault-agent`.
+
+```bash
+make vault-rotate-secret-id     # rotate now (e.g. suspected exposure)
+```
+
+`make verify` warns when fewer than 14 days remain.
+
+---
+
+## Rollback for Behaviour-Changing Controls
+
+Use the console (virt-manager / physical) if SSH is affected.
+
+| Control                   | Rollback                                                                                                           |
+|---------------------------|--------------------------------------------------------------------------------------------------------------------|
+| Firewall zone binding     | `firewall-cmd --set-default-zone=public` and `firewall-cmd --zone=public --change-interface=<iface>`               |
+| DoT egress pinning        | `firewall-cmd --permanent --delete-policy=dot-egress && firewall-cmd --reload`                                     |
+| DNS-over-TLS              | `: > /etc/dnsconfd.conf && systemctl restart dnsconfd` (falls back to DHCP resolvers)                              |
+| pam_access                | Log in as root on the console (`+:root:LOCAL`), restore `/etc/security/access.conf`                                |
+| systemd sandboxing        | `rm /etc/systemd/system/<unit>.service.d/10-hardening.conf && systemctl daemon-reload && systemctl restart <unit>` |
+| Crypto policy NO-SHA1-MAC | `update-crypto-policies --set DEFAULT`                                                                             |
+
+Then set the matching inventory variable so the next deploy does not
+re-apply the change.
 
 ---
 
@@ -810,13 +951,13 @@ All 3 PKI roles must re-issue:
 # Vault server cert
 vault write pki_int/issue/vault-server \
   common_name="HashiCorp Vault" \
-  alt_names="localhost,vault.local" \
+  alt_names="localhost,vault.internal" \
   ip_sans="127.0.0.1"
 
 # Nginx gateway cert
 vault write pki_int/issue/nginx-gateway \
   common_name="Nginx Gateway" \
-  alt_names="vault.local"
+  alt_names="vault.internal"
 
 # Client auth cert
 vault write pki_int/issue/client-auth \

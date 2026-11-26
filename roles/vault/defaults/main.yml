@@ -4,7 +4,8 @@ vault_addr: "https://127.0.0.1:8200"
 vault_api_addr: "https://127.0.0.1:8200"
 vault_cluster_addr: "https://127.0.0.1:8201"
 vault_raft_node_id: "node1"
-vault_local_hostname: vault.local
+vault_local_hostname: vault.internal
+vault_status_hostname: "status.{{ vault_local_hostname }}"
 vault_ui: true
 vault_disable_mlock: false
 vault_log_level: info
@@ -27,7 +28,18 @@ vault_tls_client_ca_file: "{{ vault_cert_dir }}/root.crt"
 # Dedicated Vault listener for Nginx proxy (requires client certificate)
 vault_proxy_listener_port: 8202
 
-# Nginx proxy cert directory (separate leaf cert, vault.local SAN only)
+# TCP ports labeled vault_cluster_port_t (the custom policy's only bind
+# type for vault_t). Vault opens a cluster listener at port+1 for EVERY
+# tcp listener, so the 8202 listener also binds 8203 even on a
+# single-node Raft cluster; unlabeled, that bind is an AVC + ERROR on
+# each start.
+vault_selinux_ports:
+  - "8200"
+  - "8201"
+  - "{{ vault_proxy_listener_port }}"
+  - "{{ vault_proxy_listener_port | int + 1 }}"
+
+# Nginx proxy cert directory (separate leaf cert, vault_local_hostname SAN only)
 vault_proxy_cert_dir: /etc/nginx/certs
 
 vault_key_shares: 5
@@ -51,6 +63,11 @@ vault_pki_client_auth_cn: "{{ common_admin_user }} - VaultPass"
 vault_pki_client_auth_ou: "Workstation Auth"
 vault_pki_nginx_proxy_client_cn: "Nginx Proxy Client"
 vault_pki_nginx_proxy_client_ou: "Internal Services"
+# Bastion -> SSH gateway client certificate (KNOWN_ISSUES P26). The OU must
+# match proxy_ssh_gateway_client_ou (nginx allow-list).
+vault_pki_bastion_cn: "Bastion Gateway Client"
+vault_pki_bastion_ou: "Bastion Gateway"
+vault_pki_bastion_ttl: "720h"
 vault_pki_locality: "Washington"
 vault_pki_province: "District of Columbia"
 vault_pki_country: "US"
@@ -88,4 +105,23 @@ vault_cert_auth_enabled: true
 vault_oidc_provider_enabled: true
 vault_client_cert_ttl: "72h"
 vault_client_cert_max_ttl: "168h"
+
+# Browser client-cert sync (KNOWN_ISSUES #50): re-import the Agent-renewed
+# client cert into these users' Chrome (~/.pki/nssdb) and Firefox NSS
+# databases on every renewal, plus a periodic run that picks up Firefox
+# profiles created after the deploy.
+vault_browser_cert_sync_users:
+  - "{{ common_admin_user }}"
+vault_browser_cert_nickname: "VaultPass Client Cert"
+vault_browser_cert_sync_interval: 15min
 vault_client_cert_tpm2_handle: "0x81000001"
+
+# ---------------------------------------------------------------------------
+# AppRole secret_id lifecycle (Vault Agent auto-auth)
+# ---------------------------------------------------------------------------
+# Bounded lifetime (was 0 = never expires). Rotated automatically when less
+# than vault_approle_secret_id_rotate_before_seconds remain, or on demand:
+#   make vault-rotate-secret-id
+vault_approle_secret_id_ttl: "2160h"
+vault_approle_secret_id_rotate_before_seconds: 2592000
+vault_approle_force_rotate: false

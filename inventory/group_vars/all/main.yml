@@ -87,6 +87,8 @@ common_bashrc_files:
   - start_chrome.sh
 
 common_umask_value: "0027"
+# Idle interactive shell timeout in seconds (CIS 5.6.4); 0 disables.
+common_shell_timeout: 3600
 common_luks_root_device: ""
 
 common_sshd_banner: |
@@ -99,27 +101,64 @@ common_sshd_banner: |
 # ---------------------------------------------------------------------------
 # DNS resolver (roles/dns -- Unbound + dnsconfd, DNSSEC + DoT)
 # ---------------------------------------------------------------------------
-# DoT upstream servers are configured in dnsconfd.conf (static_servers).
+# DoT upstream servers are rendered from dns_dot_upstreams into /etc/dnsconfd.conf.
 # dnsconfd manages resolv.conf and Unbound forward zones automatically.
 
+# ---------------------------------------------------------------------------
+# Service hostnames -- SINGLE SOURCE OF TRUTH (see ADR-0008)
+# ---------------------------------------------------------------------------
+# `.internal` is the ICANN-reserved TLD for private use. `.local` is
+# reserved for multicast DNS (RFC 6762) and stays with Avahi only.
+# Every Nginx server_name, certificate SAN, browser policy, CRL URL and
+# test derives from these three variables -- never hard-code the names.
+vault_local_hostname: vault.internal
+vault_status_hostname: "status.{{ vault_local_hostname }}"
+vault_ssh_gateway_hostname: vault-ssh-gateway.internal
+
 dns_local_data:
-  - name: 'vault.local'
+  - name: "{{ vault_local_hostname }}"
     type: 'A'
     value: '127.0.0.1'
-  - name: 'status.vault.local'
+  - name: "{{ vault_status_hostname }}"
     type: 'A'
     value: '127.0.0.1'
 
 dns_local_data_ptr:
   - ip: '127.0.0.1'
-    name: 'vault.local'
+    name: "{{ vault_local_hostname }}"
 
 dns_private_domains:
-  - 'local'
+  - 'internal'
+
+# DoT upstreams -- SINGLE SOURCE for dnsconfd.conf (static_servers) and the
+# firewalld dot-egress policy (outbound tcp/853 allowed only to these).
+# Defined here, not only in roles/dns defaults, because the firewall runs in
+# the Phase 2 play where dns role defaults are not visible. Every entry
+# applies threat filtering (KNOWN_ISSUES P15: Google removed).
+dns_dot_upstreams:
+  - address: "9.9.9.9"
+    name: "dns.quad9.net"
+    comment: "Quad9 -- threat intelligence, no logging"
+  - address: "149.112.112.112"
+    name: "dns.quad9.net"
+    comment: "Quad9 secondary"
+  - address: "9.9.9.11"
+    name: "dns.quad9.net"
+    comment: "Quad9 + ECS"
+  - address: "149.112.112.11"
+    name: "dns.quad9.net"
+    comment: "Quad9 + ECS secondary"
+  - address: "1.1.1.2"
+    name: "cloudflare-dns.com"
+    comment: "Cloudflare malware-filtering"
+  - address: "1.0.0.2"
+    name: "cloudflare-dns.com"
+    comment: "Cloudflare malware-filtering secondary"
 
 dns_blocklist_enabled: true
 dns_additional_blocklist_urls:
-  - 'https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/hosts/pro.txt'
+  # jsDelivr's hosts/pro.txt path returns 403; GitHub domains-only format.
+  - 'https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/pro-onlydomains.txt'
   # - 'https://phishing.army/download/phishing_army_blocklist.txt'
   # - 'https://small.oisd.nl/domainswild'
 
@@ -176,9 +215,15 @@ reboot_ok: false
 # ---------------------------------------------------------------------------
 # linux_system_roles.crypto_policies (Tier 0)
 # ---------------------------------------------------------------------------
-# DEFAULT is safe for all applications. Change to FUTURE for maximum security
-# when you have verified all client applications support it.
-crypto_policies_policy: DEFAULT
+# DEFAULT + custom NO-SHA1-MAC sub-policy (installed by a site.yml
+# pre-task): removes the hmac-sha1 / hmac-sha1-etm MACs sshd offers under
+# DEFAULT. The stock NO-SHA1 sub-policy was tried and reverted
+# (2026-11-25): it left the SSH SHA-1 MACs in place and rejected SHA-1
+# key binding signatures, which invalidated Microsoft's VS Code repo key
+# (EB3E94ADBE1229CF) -- `code` failed rpm signature checks
+# (KNOWN_ISSUES "crypto_policies NO-SHA1"). FUTURE was reverted earlier
+# because it rejects RSA-2048 certificates on third-party package CDNs.
+crypto_policies_policy: "DEFAULT:NO-SHA1-MAC"
 crypto_policies_reboot_ok: false
 
 # ---------------------------------------------------------------------------
@@ -186,11 +231,20 @@ crypto_policies_reboot_ok: false
 # ---------------------------------------------------------------------------
 timesync_ntp_provider: chrony
 timesync_ntp_servers:
+  # NTS-only (authenticated time): a spoofed clock defeats certificate,
+  # CRL and token expiry checks. time.google.com (no NTS) was removed.
   - hostname: time.cloudflare.com
     iburst: true
     nts: true
-  - hostname: time.google.com
+  - hostname: nts.netnod.se
     iburst: true
+    nts: true
+  - hostname: ptbtime1.ptb.de
+    iburst: true
+    nts: true
+# Never select an unauthenticated source, even if all NTS sources fail.
+timesync_chrony_custom_settings:
+  - "authselectmode require"
 
 # ---------------------------------------------------------------------------
 # linux_system_roles.tuned (Tier 0 -- sets base profile before kernel_settings)
@@ -227,6 +281,22 @@ kernel_settings_sysctl:
     value: 1
   - name: fs.suid_dumpable
     value: 0
+  # IPv6 hardening: ignore router advertisements and ICMP redirects (a rogue
+  # RA on the segment could otherwise redirect traffic). IPv4 is used here.
+  - name: net.ipv6.conf.all.accept_ra
+    value: 0
+  - name: net.ipv6.conf.default.accept_ra
+    value: 0
+  - name: net.ipv6.conf.all.accept_redirects
+    value: 0
+  - name: net.ipv6.conf.default.accept_redirects
+    value: 0
+  - name: net.ipv4.conf.default.accept_redirects
+    value: 0
+  # One-way switch: once 1, kexec_load stays disabled until reboot, so a
+  # root attacker cannot kexec into an unsigned kernel.
+  - name: kernel.kexec_load_disabled
+    value: 1
 # THP: set to "never" on physical hosts only (conditionally in site.yml pre_tasks)
 kernel_settings_reboot_ok: false
 
@@ -298,6 +368,9 @@ systemd_masked_units:
   - systemd-resolved.service
   - systemd-resolved-monitor.socket
   - systemd-resolved-varlink.socket
+  # Cockpit web console listened on *:9090 (review finding E-07); not part
+  # of this design (administration is SSH + Ansible).
+  - cockpit.socket
 
 # Avahi is managed by roles/avahi with a hardened config (user-service
 # publishing disabled, no HINFO/workstation leak, rlimit-core=0).
@@ -314,6 +387,8 @@ sshd:
   AuthenticationMethods: "publickey keyboard-interactive"
   X11Forwarding: "no"
   AllowTcpForwarding: "no"
+  # No documented use case; a compromised host could hijack a forwarded agent.
+  AllowAgentForwarding: "no"
   MaxAuthTries: 3
   MaxSessions: 2
   ClientAliveInterval: 300
@@ -451,7 +526,9 @@ auditd_rules:
     keyname: logins
   - action: always
     filter: exit
-    dir: /var/run/faillock
+    # Must match faillock.conf `dir` (roles/auth auth_faillock_dir); the old
+    # /var/run/faillock watch never saw a lockout (review finding E-09).
+    dir: "{{ auth_faillock_dir | default('/var/log/faillock') }}"
     permission:
       - write
       - attribute_change
@@ -719,6 +796,89 @@ auditd_rules:
       - attribute_change
     keyname: vault_ssh_config
 
+  # -----------------------------------------------------------------
+  # Authentication stack, firewall, units, policy and local binaries
+  # (review finding E-09). Missing dirs are pre-created by the Phase 2
+  # pre-task in playbooks/site.yml before auditd loads these rules.
+  # -----------------------------------------------------------------
+  - action: always
+    filter: exit
+    dir: /etc/pam.d
+    permission:
+      - write
+      - attribute_change
+    keyname: pam_config
+  - action: always
+    filter: exit
+    dir: /etc/sssd
+    permission:
+      - write
+      - attribute_change
+    keyname: identity_config
+  - action: always
+    filter: exit
+    dir: /etc/authselect
+    permission:
+      - write
+      - attribute_change
+    keyname: pam_config
+  - action: always
+    filter: exit
+    dir: /etc/firewalld
+    permission:
+      - write
+      - attribute_change
+    keyname: firewall_config
+  - action: always
+    filter: exit
+    dir: /etc/systemd/system
+    permission:
+      - write
+      - attribute_change
+    keyname: systemd_units
+  - action: always
+    filter: exit
+    dir: /etc/polkit-1
+    permission:
+      - write
+      - attribute_change
+    keyname: polkit_config
+  - action: always
+    filter: exit
+    dir: /usr/local/bin
+    permission:
+      - write
+      - attribute_change
+    keyname: local_binaries
+  - action: always
+    filter: exit
+    dir: /etc/sysconfig
+    permission:
+      - write
+      - attribute_change
+    keyname: sysconfig
+  - action: always
+    filter: exit
+    dir: /etc/vault-agent.d
+    permission:
+      - write
+      - attribute_change
+    keyname: vault_config
+  - action: always
+    filter: exit
+    dir: /etc/crypto-policies
+    permission:
+      - write
+      - attribute_change
+    keyname: crypto_policy
+  - action: always
+    filter: exit
+    path: /etc/dnsconfd.conf
+    permission:
+      - write
+      - attribute_change
+    keyname: dns_config
+
 # ---------------------------------------------------------------------------
 # linux_system_roles.tlog (Tier 1)
 # ---------------------------------------------------------------------------
@@ -748,15 +908,35 @@ firewall:
   - previous: replaced
   - zone: FedoraWorkstation
     state: present
+  # Make the hardened zone the one that actually filters traffic (review
+  # finding E-01): before this, the zone was configured but nothing was
+  # bound to it, so the interface stayed in the permissive "public" zone.
+  - set_default_zone: FedoraWorkstation
+  - zone: FedoraWorkstation
+    interface: "{{ ansible_default_ipv4.interface }}"
+    state: enabled
+    permanent: true
+    runtime: true
   - zone: FedoraWorkstation
     target: DROP
     state: enabled
     permanent: true
+  # The stock FedoraWorkstation zone opens ssh to ANY source, which made the
+  # bastion-only rich rule meaningless. SSH is now allowed only by the
+  # ssh_allowed_sources rich rules below (the bastion is also the Ansible
+  # controller, so deployment access is preserved).
   - zone: FedoraWorkstation
     service:
       - dhcpv6-client
       - samba-client
+      - ssh
     state: disabled
+    permanent: true
+  # mDNS (Avahi, link-local multicast) stays reachable for GNOME discovery.
+  - zone: FedoraWorkstation
+    service:
+      - mdns
+    state: enabled
     permanent: true
   - zone: FedoraWorkstation
     port:
@@ -774,6 +954,16 @@ firewall:
   - zone: FedoraWorkstation
     rich_rule: "{{ firewall_rich_rules }}"
     state: enabled
+    permanent: true
+  # Outbound DNS-over-TLS pinned to the approved upstreams (KNOWN_ISSUES
+  # P16). HOST -> ANY is a symbolic-zone policy, so it is always active.
+  # Accept rules carry a lower priority than the reject so they win.
+  - policy: dot-egress
+    ingress_zone: HOST
+    egress_zone: ANY
+    target: CONTINUE
+    rich_rule: "{{ firewall_dot_egress_rules }}"
+    state: present
     permanent: true
 firewall_disable_conflicting_services: true
 
@@ -823,8 +1013,8 @@ selinux_restore_dirs:
   - /opt/vault
   - /var/log/vault
   - /etc/nginx/certs
-# Port labeling for vault_cluster_port_t (8201) is handled inside the
-# "Compile and install Vault SELinux policy" handler in roles/vault/handlers/
+# Port labeling for vault_cluster_port_t (vault_selinux_ports) is handled
+# in roles/vault/tasks/install.yml right after the policy module loads,
 # rather than via selinux_ports here, because vault_cluster_port_t is defined
 # by our custom policy module and doesn't exist until after semodule installs
 # it. The linux-system-roles.selinux role's seport module would fail on a
@@ -903,6 +1093,7 @@ fapolicyd_add_trusted_paths:
   - /usr/local/bin/vault-agent-split-proxy-client-cert
   - /usr/local/bin/vault-enroll-client-cert
   - /usr/local/bin/vault-agent-split-client-cert
+  - /usr/local/bin/vault-browser-cert-sync
   - /usr/local/bin/nginx-crl-update
 
 # ---------------------------------------------------------------------------

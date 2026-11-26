@@ -1,0 +1,28 @@
+{{ ansible_managed | default('Ansible managed') | comment }}
+# systemd sandboxing drop-in (KNOWN_ISSUES P23 / review finding E-10).
+# Defense in depth on top of SELinux (httpd_t). Conservative set --
+# verified with `systemd-analyze security nginx` and zero AVCs.
+# No ProtectSystem: Vault Agent rotates certs into /etc/nginx/certs and the
+# CRL script writes there. No CapabilityBoundingSet: the master (root) must
+# read keys owned vault:vault 0400, which needs CAP_DAC_OVERRIDE.
+# NoNewPrivileges is deliberately NOT set: with NNP the kernel blocks the
+# SELinux domain transition systemd performs at exec (init_t -> named_t /
+# dnsconfd_t / httpd_t) unless the policy grants nnp_transition, which the
+# Fedora policy does not for these domains. The process then runs in the
+# wrong domain and fails ("Permission denied" on its own /run and
+# /var/lib files). Confirmed on testfedora 2026-11-25. SELinux confinement
+# is the stronger control here, so it wins.
+[Service]
+PrivateTmp=yes
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+LimitCORE=0

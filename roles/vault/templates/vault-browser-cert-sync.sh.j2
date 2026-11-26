@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# {{ ansible_managed | default('Managed by Ansible') }}
+# vault-browser-cert-sync -- keep the Vault Agent client certificate
+# imported in every browser NSS database of the listed users
+# (Chrome/Chromium: ~/.pki/nssdb, Firefox: every profile).
+#
+# Vault Agent renews the cert ({{ vault_client_cert_ttl }} TTL) by rewriting
+# {{ vault_cert_dir }}/client.crt; browsers only offer certs present in
+# their own NSS database, so each renewal must be re-imported
+# (KNOWN_ISSUES #50). Triggered by vault-browser-cert-sync.path (renewal),
+# vault-browser-cert-sync.timer (catches Firefox profiles created later)
+# and the playbook.
+#
+# Idempotent: a database whose cert serial already matches client.crt is
+# left untouched. Never kills browsers: every NSS call has a timeout; a
+# locked database counts as failed and is retried by the timer.
+set -euo pipefail
+
+CERT="{{ vault_cert_dir }}/client.crt"
+KEY="{{ vault_cert_dir }}/client.key"
+NICK="{{ vault_browser_cert_nickname }}"
+STATUS="/run/vault-browser-cert-sync.status"
+USERS=({% for u in vault_browser_cert_sync_users %}"{{ u }}"{% if not loop.last %} {% endif %}{% endfor %})
+
+log() { echo "vault-browser-cert-sync: $*"; }
+
+if [[ ! -s "$CERT" || ! -s "$KEY" ]]; then
+	log "no client certificate rendered yet"
+	echo "imported=0 current=0 failed=0" >"$STATUS"
+	exit 0
+fi
+want=$(openssl x509 -in "$CERT" -noout -serial | cut -d= -f2)
+
+imported=0
+current=0
+failed=0
+
+for user in "${USERS[@]}"; do
+	home=$(getent passwd "$user" | cut -d: -f6) || continue
+	[[ -n "$home" && -d "$home" ]] || continue
+	gid=$(id -g "$user")
+	# setpriv, not runuser: runuser opens a PAM session per call, which
+	# flooded the journal/audit log on every 15-minute run.
+	as_user() { setpriv --reuid="$user" --regid="$gid" --init-groups env HOME="$home" "$@"; }
+
+	dbs=("$home/.pki/nssdb")
+	for d in "$home"/.config/mozilla/firefox/*/ "$home"/.mozilla/firefox/*/; do
+		[[ -f "${d}cert9.db" ]] && dbs+=("${d%/}")
+	done
+
+	# Chrome database: create it (empty password) if the user has none.
+	if [[ ! -f "$home/.pki/nssdb/cert9.db" ]]; then
+		as_user mkdir -p -m 0700 "$home/.pki/nssdb"
+		as_user timeout 30 certutil -N -d "sql:$home/.pki/nssdb" --empty-password
+	fi
+
+	tmp=$(as_user mktemp -d)
+	p12="$tmp/client.p12"
+	(umask 077 && openssl pkcs12 -export -in "$CERT" -inkey "$KEY" \
+		-name "$NICK" -passout pass: -out "$p12")
+	chown "$user:" "$p12"
+
+	for db in "${dbs[@]}"; do
+		have=$(as_user timeout 30 certutil -L -d "sql:$db" -n "$NICK" -a 2>/dev/null |
+			openssl x509 -noout -serial 2>/dev/null | cut -d= -f2 || true)
+		if [[ "$have" == "$want" ]]; then
+			current=$((current + 1))
+			continue
+		fi
+		# Remove every older cert with this nickname together with its
+		# private key (-F), so key4.db does not accumulate stale keys.
+		for _ in 1 2 3 4 5 6 7 8 9 10; do
+			as_user timeout 30 certutil -F -d "sql:$db" -n "$NICK" </dev/null >/dev/null 2>&1 ||
+				as_user timeout 30 certutil -D -d "sql:$db" -n "$NICK" </dev/null >/dev/null 2>&1 ||
+				break
+		done
+		if as_user timeout 60 pk12util -d "sql:$db" -i "$p12" -W "" -K "" </dev/null >/dev/null 2>&1; then
+			imported=$((imported + 1))
+			log "imported serial ${want} into ${db}"
+		else
+			failed=$((failed + 1))
+			log "FAILED to import into ${db} (locked or password-protected?); will retry"
+		fi
+	done
+	rm -rf "$tmp"
+done
+
+echo "imported=${imported} current=${current} failed=${failed}" | tee "$STATUS"
+[[ "$failed" -eq 0 ]]

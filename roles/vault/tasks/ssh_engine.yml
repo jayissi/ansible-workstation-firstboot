@@ -15,7 +15,7 @@
     body_format: json
     body:
       type: ssh
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
@@ -37,7 +37,7 @@
       allowed_users: "{{ common_admin_user }}"
       cidr_list: "{{ vault_ssh_otp_cidr_list }}"
       port: 22
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
@@ -54,7 +54,7 @@
     body_format: json
     body:
       type: ssh
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
@@ -73,7 +73,7 @@
     body:
       generate_signing_key: true
       key_type: "{{ vault_ssh_ca_key_type }}"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
@@ -110,7 +110,7 @@
       # "default" for non-RSA CA key types (this role's CA is Ed25519, set
       # via vault_ssh_ca_key_type in ssh-ca/config/ca above). "ssh-ed25519"
       # is not a recognized value and causes a 500 "unknown algorithm signer".
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
@@ -122,7 +122,7 @@
   ansible.builtin.uri:
     url: "{{ vault_addr }}/v1/ssh-ca/public_key"
     method: GET
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     return_content: true
     status_code:
       - 200
@@ -154,7 +154,7 @@
         path "ssh-ca/sign/breakglass" {
           capabilities = ["create", "update"]
         }
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
@@ -173,7 +173,7 @@
       path: "ssh-otp/creds/daily"
       rate: 5
       interval: "60s"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204

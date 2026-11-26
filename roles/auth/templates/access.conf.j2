@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+# pam_access rules (pam_access is in the account stack via authselect's
+# with-pamaccess feature). Format: permission:users:origins
+# First matching rule wins; the last rule denies everyone else.
+{% for rule in auth_access_rules %}
+{{ rule }}
+{% endfor %}

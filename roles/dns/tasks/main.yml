@@ -29,7 +29,7 @@
 
 - name: Import blocklist tasks
   ansible.builtin.import_tasks: blocklist.yml
-  when: dns_blocklist_enabled | bool and not (dns_rpz_enabled | default(false) | bool)
+  when: dns_blocklist_enabled | bool
   tags:
     - dns
     - dns:blocklist

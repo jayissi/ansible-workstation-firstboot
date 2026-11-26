@@ -1,0 +1,168 @@
+---
+# roles/common/tasks/session.yml
+# CIS session controls: idle shell timeout, cron/at access, GNOME screen
+# lock and GDM login banner.
+
+# --- Idle shell timeout (CIS 5.6.4) ----------------------------------------
+# readonly is guarded so re-sourcing /etc/profile in a nested login shell
+# does not print "TMOUT: readonly variable".
+- name: Session | Deploy idle shell timeout (TMOUT)
+  ansible.builtin.copy:
+    dest: /etc/profile.d/tmout.sh
+    content: |
+      # Set by ansible-workstation-firstboot (common_shell_timeout).
+      # Interactive shells idle for this many seconds are logged out.
+      if [ "${TMOUT-}" != "{{ common_shell_timeout }}" ]; then
+          TMOUT={{ common_shell_timeout }}
+          readonly TMOUT
+          export TMOUT
+      fi
+    owner: root
+    group: root
+    mode: "0644"
+  when: common_shell_timeout | int > 0
+
+- name: Session | Remove idle shell timeout when disabled (common_shell_timeout = 0)
+  ansible.builtin.file:
+    path: /etc/profile.d/tmout.sh
+    state: absent
+  when: common_shell_timeout | int == 0
+
+# --- cron / at access (CIS 5.1.8-9) ---------------------------------------
+# With cron.allow / at.allow present, only the listed users may schedule
+# jobs; everyone else is refused regardless of cron.deny / at.deny.
+- name: Session | Restrict cron and at to allowed users
+  ansible.builtin.copy:
+    dest: "{{ item }}"
+    content: |
+      # Managed by ansible-workstation-firstboot (common_cron_allow_users).
+      {% for user in common_cron_allow_users %}
+      {{ user }}
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - /etc/cron.allow
+    - /etc/at.allow
+
+# --- GNOME screen lock + GDM banner (CIS 1.8.x) ----------------------------
+- name: Session | Check for dconf (GNOME desktop present)
+  ansible.builtin.stat:
+    path: /usr/bin/dconf
+  register: __common_dconf_bin
+
+- name: Session | Configure GNOME screen lock and GDM banner
+  when: __common_dconf_bin.stat.exists
+  block:
+    - name: Session | Ensure the user dconf profile references the local database
+      ansible.builtin.lineinfile:
+        path: /etc/dconf/profile/user
+        line: "{{ item }}"
+        create: true
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - "user-db:user"
+        - "system-db:local"
+      notify: Update dconf databases
+
+    # GDM profile: NEVER create a partial /etc/dconf/profile/gdm. It
+    # shadows the vendor /usr/share/dconf/profile/gdm, whose
+    # `file-db:/usr/share/gdm/greeter-dconf-defaults` keeps the greeter
+    # in login-screen mode. Without it the gdm-greeter user ran a full
+    # GNOME desktop at boot with no password (KNOWN_ISSUES #49). The
+    # vendor profile already includes system-db:gdm (our banner).
+    - name: Session | Check for the vendor GDM dconf profile
+      ansible.builtin.stat:
+        path: /usr/share/dconf/profile/gdm
+      register: __common_gdm_vendor_profile
+
+    - name: Session | Read any /etc GDM dconf profile
+      ansible.builtin.slurp:
+        src: /etc/dconf/profile/gdm
+      register: __common_gdm_etc_profile
+      failed_when: false
+
+    - name: Session | Remove the partial GDM profile written by earlier runs
+      ansible.builtin.file:
+        path: /etc/dconf/profile/gdm
+        state: absent
+      when:
+        - __common_gdm_vendor_profile.stat.exists
+        - __common_gdm_etc_profile.content is defined
+        - (__common_gdm_etc_profile.content | b64decode | trim).split() == ['user-db:user', 'system-db:gdm']
+      notify:
+        - Update dconf databases
+        - Restart GDM greeter if no user is logged in graphically
+
+    - name: Session | Deploy a complete GDM dconf profile (no vendor profile)
+      ansible.builtin.copy:
+        dest: /etc/dconf/profile/gdm
+        content: |
+          user-db:user
+          system-db:gdm
+          system-db:local
+          system-db:site
+          system-db:distro
+          file-db:/usr/share/gdm/greeter-dconf-defaults
+        owner: root
+        group: root
+        mode: "0644"
+      when: not __common_gdm_vendor_profile.stat.exists
+      notify: Update dconf databases
+
+    - name: Session | Ensure dconf database directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - /etc/dconf/db/local.d
+        - /etc/dconf/db/local.d/locks
+        - /etc/dconf/db/gdm.d
+
+    - name: Session | Deploy screen lock settings
+      ansible.builtin.copy:
+        dest: /etc/dconf/db/local.d/00-screensaver
+        content: |
+          # Managed by ansible-workstation-firstboot
+          [org/gnome/desktop/session]
+          idle-delay=uint32 {{ common_screen_idle_delay }}
+
+          [org/gnome/desktop/screensaver]
+          lock-enabled=true
+          lock-delay=uint32 {{ common_screen_lock_delay }}
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Update dconf databases
+
+    - name: Session | Lock screen settings so users cannot override them
+      ansible.builtin.copy:
+        dest: /etc/dconf/db/local.d/locks/00-screensaver
+        content: |
+          /org/gnome/desktop/session/idle-delay
+          /org/gnome/desktop/screensaver/lock-enabled
+          /org/gnome/desktop/screensaver/lock-delay
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Update dconf databases
+
+    - name: Session | Deploy GDM login banner
+      ansible.builtin.copy:
+        dest: /etc/dconf/db/gdm.d/01-banner
+        content: |
+          # Managed by ansible-workstation-firstboot (common_sshd_banner)
+          [org/gnome/login-screen]
+          banner-message-enable=true
+          banner-message-text={{ (common_sshd_banner | trim | length > 0) | ternary(common_sshd_banner | trim, common_gdm_banner_default) | to_json }}
+        owner: root
+        group: root
+        mode: "0644"
+      when: common_gdm_banner_enabled | bool
+      notify: Update dconf databases

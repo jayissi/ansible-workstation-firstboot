@@ -19,7 +19,7 @@
 - name: Init | Wait for Vault to be responsive
   ansible.builtin.uri:
     url: "{{ vault_addr }}/v1/sys/health"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 429
@@ -45,7 +45,7 @@
 - name: Init | Check if Vault is already initialized
   ansible.builtin.uri:
     url: "{{ vault_addr }}/v1/sys/init"
-    validate_certs: false
+    ca_path: "{{ _vault_ca_path }}"
   register: vault_init_status
 
 - name: Init | Initialize Vault
@@ -217,7 +217,7 @@
     - name: Init | Verify Vault is unsealed
       ansible.builtin.uri:
         url: "{{ vault_addr }}/v1/sys/health"
-        validate_certs: false
+        ca_path: "{{ _vault_ca_path }}"
         status_code:
           - 200
       register: vault_unsealed_check

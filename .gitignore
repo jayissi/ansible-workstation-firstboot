@@ -68,3 +68,9 @@ Thumbs.db
 # Claude CLI
 # =============================================================================
 .claude/
+
+# Bastion SSH-gateway client certificate (issued by Ansible, never commit)
+.bastion/
+
+# make idempotency run logs
+idempotency-*.log

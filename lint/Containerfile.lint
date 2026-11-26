@@ -17,7 +17,7 @@ LABEL maintainer="jayissi" \
 RUN dnf install -y --setopt=install_weak_deps=False \
         python3 python3-pip ansible-core ShellCheck \
         gitleaks hadolint selint shfmt libatomic nodejs npm && \
-    npm install -g markdownlint-cli2 markdown-table-formatter && \
+    npm install -g markdownlint-cli2 markdown-table-formatter@1.7.0 && \
     dnf clean all && \
     rm -rf /var/cache/dnf
 
@@ -30,7 +30,12 @@ COPY collections/requirements.yml ./collections-requirements.yml
 COPY roles/requirements.yml ./roles-requirements.yml
 
 # -- Lint venv at /opt/.venv (outside /workspace, immune to bind-mounts) ------
-RUN python3 -m venv /opt/.venv && \
+# CACHEBUST: `make ci` passes a timestamp so this layer (lint tools + Galaxy
+# content, all unpinned >= versions) is rebuilt fresh, matching what GitHub
+# Actions installs today. `make lint` leaves it at 0 to keep the cache.
+ARG CACHEBUST=0
+RUN echo "cachebust=${CACHEBUST}" && \
+    python3 -m venv /opt/.venv && \
     /opt/.venv/bin/python -m pip install --no-cache-dir --upgrade pip && \
     /opt/.venv/bin/python -m pip install --no-cache-dir -r requirements-lint.txt && \
     . /opt/.venv/bin/activate && \

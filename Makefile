@@ -25,6 +25,11 @@ VENV           := .venv
 LINT_IMG       := ansible-workstation-lint
 LINT_CONTAINER := lint/Containerfile.lint
 PLAYBOOK       := playbooks/site.yml
+# Workstation address (first ansible_host in the inventory) for bastion tests.
+TARGET_IP ?= $(shell awk '/ansible_host:/{print $$2; exit}' inventory/hosts.yml)
+# Idempotency baseline: max "changed=" on a re-run of an already-deployed
+# host (vendored roles always report some changes; see KNOWN_ISSUES).
+VALIDATE_MAX_CHANGED ?= 24
 
 # ---------------------------------------------------------------------------
 # Derived paths (not user-configurable)
@@ -74,11 +79,14 @@ venv: ## Create venv, install Ansible + Galaxy roles/collections
 # =============================================================================
 # Linting (Podman -- single source of truth, keeps host clean)
 # =============================================================================
-.PHONY: lint clean
+.PHONY: lint ci clean
 
 lint: ## Auto-fix then run all linters inside Podman container
 	podman build -t $(LINT_IMG) -f $(LINT_CONTAINER) .
 	podman run --rm -v $(CURDIR):/workspace:z $(LINT_IMG)
+
+ci: ## Dry-run GitHub Actions lint locally (clean snapshot, fresh tools, no auto-fix)
+	bash lint/ci-local.sh
 
 clean: ## Remove venv, caches, and lint container image
 	rm -rf $(VENV) .ruff_cache __pycache__
@@ -96,7 +104,7 @@ galaxy: ## Re-download Galaxy roles and collections only
 # =============================================================================
 # Deployment and operations (requires venv)
 # =============================================================================
-.PHONY: test deploy verify vault-rotate-root-token security-test
+.PHONY: test deploy verify validate vault-rotate-root-token vault-rotate-secret-id security-test bastion-test idempotency
 
 test: ## Syntax-check the playbook (dry run)
 	$(call require_venv)
@@ -116,5 +124,27 @@ vault-rotate-root-token: ## Rotate the Vault root token (on-demand)
 	$(ACTIVATE) && ansible-playbook $(PLAYBOOK) \
 		--tags vault-rotate-token -e vault_rotate_root_token=true
 
+vault-rotate-secret-id: ## Rotate the Vault Agent AppRole secret_id now (on-demand)
+	$(call require_venv)
+	$(ACTIVATE) && ansible-playbook $(PLAYBOOK) \
+		--tags vault -e vault_approle_force_rotate=true
+
+# On a hardened host the admin is staff_u: plain `sudo` leaves root in the
+# confined staff_t domain, which SELinux blocks from reading the Vault
+# certificates and Nginx logs the tests inspect. Transition to sysadm_t
+# (the admin domain) when needed; use plain sudo on a not-yet-hardened host.
 security-test: ## Run security regression tests on the target VM
-	ssh -F .ssh_config test 'sudo bash -s' < tests/security-test.sh
+	ssh -F .ssh_config test 'if id -Z | grep -q ":staff_r:"; then exec sudo -n -r sysadm_r -t sysadm_t bash -s; else exec sudo -n bash -s; fi' < tests/security-test.sh
+
+bastion-test: ## Run SSH-gateway tests from the bastion side (uses .bastion/ client cert)
+	bash tests/bastion-test.sh $(TARGET_IP) .bastion
+
+idempotency: ## Re-run the playbook; fail if changed= exceeds VALIDATE_MAX_CHANGED
+	$(call require_venv)
+	$(ACTIVATE) && bash tests/idempotency.sh $(VALIDATE_MAX_CHANGED)
+
+validate: ## Post-deploy validation: outcome checks + security tests + idempotency
+	$(MAKE) verify
+	$(MAKE) security-test
+	$(MAKE) bastion-test
+	$(MAKE) idempotency
