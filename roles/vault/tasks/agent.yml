@@ -42,6 +42,14 @@
     group: root
     mode: "0755"
 
+- name: Agent | Deploy renewed-cert KV publisher
+  ansible.builtin.template:
+    src: vault-agent-publish-cert.sh.j2
+    dest: /usr/local/bin/vault-agent-publish-cert
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Agent | Deploy proxy cert/key split script
   ansible.builtin.template:
     src: vault-agent-split-proxy-cert.sh.j2

@@ -24,5 +24,9 @@ chmod 0400 "${KEY_OUT}.new"
 mv -f "${CERT_OUT}.new" "${CERT_OUT}"
 mv -f "${KEY_OUT}.new" "${KEY_OUT}"
 
+# Publish the renewed PUBLIC cert to secret/tls/vault (KNOWN_ISSUES #57).
+# Non-fatal by design: never blocks the cert swap.
+/usr/local/bin/vault-agent-publish-cert vault "${CERT_OUT}" || true
+
 # Vault reload is handled by the systemd vault-cert-reload.path unit
 # which watches the cert file for changes (PathModified).

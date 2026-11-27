@@ -248,7 +248,8 @@ optional network access (see
 `vault.te` also grants `devlog_t:unix_dgram_socket sendto` to enable
 the syslog audit backend (Vault needs to send log entries to
 `/dev/log`); v1.5.0 adds a `dontaudit` for the Agent split scripts'
-awk `isatty()` ioctl probe. The vault role additionally deploys `logrotate-vault.te`
+awk `isatty()` ioctl probe. v1.6.0 lets the renewed-cert publisher read the Nginx
+cert it writes and the system OpenSSL config (`cert_t`). The vault role additionally deploys `logrotate-vault.te`
 (built and loaded by the same handler as `vault.pp`), which allows
 `logrotate_t` to rotate the `vault_log_t` audit log (KNOWN_ISSUES #41).
 Ports 8200-8203 are labeled `vault_cluster_port_t` (`vault_selinux_ports`;

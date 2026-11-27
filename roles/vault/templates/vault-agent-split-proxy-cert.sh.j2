@@ -22,3 +22,6 @@ chmod 0444 "${CERT_OUT}.new"
 chmod 0400 "${KEY_OUT}.new"
 mv -f "${CERT_OUT}.new" "${CERT_OUT}"
 mv -f "${KEY_OUT}.new" "${KEY_OUT}"
+
+# Publish the renewed PUBLIC cert to secret/tls/nginx (KNOWN_ISSUES #57).
+/usr/local/bin/vault-agent-publish-cert nginx "${CERT_OUT}" || true

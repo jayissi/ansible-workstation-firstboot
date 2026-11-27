@@ -1107,6 +1107,7 @@ fapolicyd_add_trusted_paths:
   - /usr/local/bin/vault-agent-split-client-cert
   - /usr/local/bin/vault-browser-cert-sync
   - /usr/local/bin/vault-approle-expiry-check
+  - /usr/local/bin/vault-agent-publish-cert
   - /usr/local/bin/nginx-crl-update
 
 # ---------------------------------------------------------------------------

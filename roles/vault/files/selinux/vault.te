@@ -1,4 +1,4 @@
-policy_module(vault, 1.5.0)
+policy_module(vault, 1.6.0)
 
 ########################################
 #
@@ -131,7 +131,9 @@ allow vault_t vault_conf_t:dir { search add_name remove_name write getattr read 
 # Vault Agent writes proxy cert files to /etc/nginx/certs/ (httpd_config_t)
 # via vault-agent-split-proxy-cert. Separate leaf cert for Nginx (proxy hostname
 # SAN only), isolating Nginx's TLS identity from Vault's.
-allow vault_t httpd_config_t:file { create getattr setattr open write rename unlink };
+# 1.6.0: + read -- vault-agent-publish-cert reads back the Nginx cert it
+# just wrote, to publish the public copy to secret/tls/nginx (KNOWN_ISSUES #57).
+allow vault_t httpd_config_t:file { create getattr setattr open read write rename unlink };
 allow vault_t httpd_config_t:dir { search add_name remove_name write getattr open };
 
 ## auth_read_passwd
@@ -171,6 +173,11 @@ allow vault_t vault_sys_content_t:file { create getattr setattr lock map open re
 # only the probe is denied. dontaudit (not allow) -- grants nothing,
 # silences the AVC that appears on every boot and cert rotation.
 dontaudit vault_t { vault_sys_content_t vault_conf_t httpd_config_t }:file ioctl;
+
+# 1.6.0: the publisher's TLS client (python3 ssl / OpenSSL) reads the system
+# OpenSSL config under /etc/pki/tls, which includes the crypto-policies
+# back-end. Read-only access to public cert/config material (cert_t).
+miscfiles_read_generic_certs(vault_t)
 
 # Need to access log files
 allow vault_t vault_log_t:dir { getattr search write add_name };

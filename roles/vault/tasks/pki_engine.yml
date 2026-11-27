@@ -477,6 +477,24 @@
       - 200
       - 204
 
+- name: Pki Engine | Create vault-agent-tls-publish policy (KV copies of renewed certs)
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/policies/acl/vault-agent-tls-publish"
+    method: PUT
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      # Only the two public leaf copies (KNOWN_ISSUES #57); read is needed to
+      # skip unchanged writes. No access to tls/ca_bundle or anything else.
+      policy: |
+        path "secret/data/tls/vault" { capabilities = ["create", "update", "read"] }
+        path "secret/data/tls/nginx" { capabilities = ["create", "update", "read"] }
+    ca_path: "{{ _vault_ca_path }}"
+    status_code:
+      - 200
+      - 204
+
 - name: Pki Engine | Create vault-agent-auth policy (identity-bearing certs)
   ansible.builtin.uri:
     url: "{{ vault_addr }}/v1/sys/policies/acl/vault-agent-auth"
@@ -525,6 +543,7 @@
           token_policies:
             - vault-agent-tls
             - vault-agent-auth
+            - vault-agent-tls-publish
           token_ttl: "1h"
           token_max_ttl: "4h"
           secret_id_ttl: "{{ vault_approle_secret_id_ttl }}"
@@ -624,6 +643,7 @@
       token_policies:
         - vault-agent-tls
         - vault-agent-auth
+        - vault-agent-tls-publish
       token_ttl: "1h"
       token_max_ttl: "4h"
       secret_id_ttl: "{{ vault_approle_secret_id_ttl }}"

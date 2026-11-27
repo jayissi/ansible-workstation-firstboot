@@ -359,11 +359,26 @@
       RT=$(v $B/secret/data/tokens/readonly | python3 -c "import sys,json;print(json.load(sys.stdin)['data']['data']['token'])")
       rcode() { curl -s -o /dev/null -w '%{http_code}' --cacert {{ verification_vault_ca }} -H "X-Vault-Token: $RT" "$@"; }
       echo "ro_list_secret=$(rcode -X LIST $B/secret/metadata/)"
-      echo "ro_read_tls=$(rcode $B/secret/data/tls/ca)"
+      echo "ro_read_tls=$(rcode $B/secret/data/tls/ca_bundle)"
       echo "ro_read_admin_token=$(rcode $B/secret/data/tokens/admin)"
       echo "ro_write=$(rcode -X POST -d '{"data":{"x":"y"}}' $B/secret/data/vp-ro-probe)"
       unset RT
-      for p in ca vault nginx root-ca server; do
+      for pair in "vault:{{ vault_cert_dir | default('/etc/vault.d/certs') }}/server-chain.crt" \
+                  "nginx:{{ vault_proxy_cert_dir | default('/etc/nginx/certs') }}/server-chain.crt"; do
+        n=${pair%%:*}; f=${pair#*:}
+        kv=$(v $B/secret/data/tls/$n | python3 -c "import sys,json;print(json.load(sys.stdin)['data']['data']['certificate'].strip())" 2>/dev/null)
+        live=$(openssl x509 -in "$f" 2>/dev/null)
+        if [ -n "$kv" ] && [ "$kv" = "$live" ]; then echo "tls_${n}_sync=current"; else echo "tls_${n}_sync=stale"; fi
+      done
+      cd_={{ vault_cert_dir | default('/etc/vault.d/certs') }}
+      v $B/secret/data/tls/ca_bundle | python3 -c "
+      import sys,json,subprocess
+      d=json.load(sys.stdin)['data']['data']
+      def fp(pem): return subprocess.run(['openssl','x509','-noout','-fingerprint','-sha256'],input=pem,capture_output=True,text=True).stdout.strip()
+      def fpf(path): return subprocess.run(['openssl','x509','-noout','-fingerprint','-sha256','-in',path],capture_output=True,text=True).stdout.strip()
+      ok=fp(d['root_ca']) and fp(d['root_ca'])==fpf('$cd_/root.crt') and fp(d['intermediate_ca'])==fpf('$cd_/intermediate.crt')
+      print('tls_ca_bundle_valid=' + ('yes' if ok else 'no'))"
+      for p in ca_bundle vault nginx ca root-ca server; do
         v $B/secret/data/tls/$p | python3 -c "import sys,json;d=(json.load(sys.stdin).get('data') or {}).get('data');print('tls_$p=' + (','.join(sorted(d)) if d else 'absent'))"
       done
       for f in $(v -X LIST $B/secret/metadata/vaultPass/ | python3 -c "import sys,json;print(' '.join(k.rstrip('/') for k in json.load(sys.stdin)['data']['keys']))"); do
@@ -388,7 +403,11 @@
       - "'readonly_tokens=1' in verification_vault_hygiene.stdout_lines"
       - "'stored_admin=periodic' in verification_vault_hygiene.stdout_lines"
       - "'stored_readonly=periodic' in verification_vault_hygiene.stdout_lines"
-      - "'tls_ca=ca_chain,intermediate_ca,root_ca' in verification_vault_hygiene.stdout_lines"
+      - "'tls_ca_bundle=ca_chain,intermediate_ca,root_ca' in verification_vault_hygiene.stdout_lines"
+      - "'tls_ca=absent' in verification_vault_hygiene.stdout_lines"
+      - "'tls_ca_bundle_valid=yes' in verification_vault_hygiene.stdout_lines"
+      - "'tls_vault_sync=current' in verification_vault_hygiene.stdout_lines"
+      - "'tls_nginx_sync=current' in verification_vault_hygiene.stdout_lines"
       - "'tls_vault=ca_chain,certificate' in verification_vault_hygiene.stdout_lines"
       - "'tls_root-ca=absent' in verification_vault_hygiene.stdout_lines"
       - "'tls_server=absent' in verification_vault_hygiene.stdout_lines"
@@ -400,7 +419,7 @@
     quiet: true
     success_msg: >-
       PASS: one periodic admin + one read-only token (lists/reads KV, cannot read tokens/ or write);
-      TLS copies public-only (tls/ca, tls/vault, tls/nginx); placeholders only in empty folders
+      TLS copies public-only (tls/ca_bundle, tls/vault, tls/nginx); placeholders only in empty folders
     fail_msg: >-
       FAIL: Vault hygiene -- {{ verification_vault_hygiene.stdout_lines
       | reject('match', '^stored_') | list }}

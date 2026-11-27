@@ -136,6 +136,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `secret/tls/vault` / `secret/tls/nginx` now follow every Vault Agent
+  renewal: the split scripts publish the renewed public cert with the
+  Agent's own token (file sink, policy `vault-agent-tls-publish`);
+  `secret/tls/ca` renamed `secret/tls/ca_bundle` (#57)
 - `vault-admin-readonly`: could read `secret/tokens/admin` (privilege
   escalation to admin) but could not list KV v2 secrets; now
   `secret/metadata/*` read/list and an explicit deny on
@@ -145,7 +149,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   admin tokens). Now one periodic token per purpose is renewed, replaced
   only when invalid (old one revoked); strays are revoked (#53)
 - `secret/tls/*`: replaced the stale `tls/server` copy (incl. a private
-  key) and `tls/root-ca` with public-only `tls/ca`, `tls/vault`,
+  key) and `tls/root-ca` with public-only `tls/ca_bundle`, `tls/vault`,
   `tls/nginx`, written only when changed (#54)
 - VaultPass placeholders now exist only in empty folders (#55)
 - GDM greeter ran a full GNOME desktop at boot without a password:

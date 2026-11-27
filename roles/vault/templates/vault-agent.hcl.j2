@@ -16,6 +16,17 @@ auto_auth {
     }
   }
 
+  # Token sink for vault-agent-publish-cert (KNOWN_ISSUES #57): the split
+  # scripts publish renewed PUBLIC certs to secret/tls/{vault,nginx} with
+  # this token. 0400 vault-only, loopback-bound (token_bound_cidrs), 1h TTL;
+  # *.tmp in agent-run is removed at boot (tmpfiles "r").
+  sink "file" {
+    config = {
+      path = "{{ vault_agent_run_dir }}/agent-token.tmp"
+      mode = 0400
+    }
+  }
+
 }
 
 # Single template block: cert, CA, and key all come from the SAME

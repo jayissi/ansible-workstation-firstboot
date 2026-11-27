@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# {{ ansible_managed | default('Managed by Ansible') }}
+# vault-agent-publish-cert -- copy a freshly renewed PUBLIC leaf cert to
+# Vault KV right after Vault Agent renews it (KNOWN_ISSUES #57).
+#
+#   vault-agent-publish-cert <kv-name> <chain-file>
+#     kv-name     vault | nginx   -> secret/tls/<kv-name>
+#     chain-file  PEM file whose FIRST certificate is the leaf
+#
+# Called at the end of the Agent's split scripts (runs as the vault user,
+# in vault_t). Authenticates with the Agent's own token from its file sink
+# ({{ vault_agent_run_dir }}/agent-token.tmp: 0400, loopback-bound, short
+# TTL, removed at boot); policy vault-agent-tls-publish allows only
+# secret/data/tls/{vault,nginx}. Writes only when the content changed and
+# never fails the caller: a miss is logged and fixed by the next renewal
+# or the next deploy. Public material only -- never a private key.
+set -uo pipefail
+
+NAME="${1:?usage: $0 <vault|nginx> <chain-file>}"
+CHAIN_FILE="${2:?usage: $0 <vault|nginx> <chain-file>}"
+TOKEN_FILE="{{ vault_agent_run_dir }}/agent-token.tmp"
+CERT_DIR="{{ vault_cert_dir }}"
+ADDR="{{ vault_addr }}"
+
+log() { echo "vault-agent-publish-cert[${NAME}]: $*" >&2; }
+
+case "$NAME" in vault | nginx) ;; *)
+	log "refusing unknown name"
+	exit 0
+	;;
+esac
+for f in "$TOKEN_FILE" "$CHAIN_FILE" "$CERT_DIR/root.crt" "$CERT_DIR/intermediate.crt"; do
+	[[ -s "$f" ]] || {
+		log "missing ${f}; skipping (next renewal or deploy will publish)"
+		exit 0
+	}
+done
+
+TOKEN_FILE="$TOKEN_FILE" CHAIN_FILE="$CHAIN_FILE" CERT_DIR="$CERT_DIR" \
+	ADDR="$ADDR" NAME="$NAME" python3 - <<'PY' || log "publish failed (non-fatal)"
+import json, os, re, ssl, sys, urllib.request
+
+pem = re.compile(r"-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----")
+def first(path):
+    with open(path) as f:
+        m = pem.findall(f.read())
+    return (m[0] + "\n") if m else ""
+
+d = os.environ
+leaf = first(d["CHAIN_FILE"])
+root = first(os.path.join(d["CERT_DIR"], "root.crt"))
+inter = first(os.path.join(d["CERT_DIR"], "intermediate.crt"))
+if not (leaf and root and inter):
+    sys.exit("no certificate found")
+want = {"certificate": leaf, "ca_chain": inter + root}
+
+with open(d["TOKEN_FILE"]) as f:
+    token = f.read().strip()
+ctx = ssl.create_default_context(cafile=os.path.join(d["CERT_DIR"], "root.crt"))
+url = f'{d["ADDR"]}/v1/secret/data/tls/{d["NAME"]}'
+hdr = {"X-Vault-Token": token, "Content-Type": "application/json"}
+
+try:
+    with urllib.request.urlopen(urllib.request.Request(url, headers=hdr), context=ctx, timeout=10) as r:
+        have = json.load(r)["data"]["data"]
+except Exception:
+    have = None
+if have == want:
+    sys.exit(0)
+req = urllib.request.Request(url, method="POST", headers=hdr,
+                             data=json.dumps({"data": want}).encode())
+with urllib.request.urlopen(req, context=ctx, timeout=10) as r:
+    print(f'vault-agent-publish-cert[{d["NAME"]}]: published secret/tls/{d["NAME"]} (HTTP {r.status})',
+          file=sys.stderr)
+PY
+exit 0

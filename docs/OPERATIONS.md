@@ -451,13 +451,13 @@ becomes empty.
 
 ### Vault KV Layout (reference)
 
-| Path                                   | Contents                                                | Written by                                         |
-|----------------------------------------|---------------------------------------------------------|----------------------------------------------------|
-| `secret/tokens/admin`, `.../readonly`  | One periodic daily-use token each (`token`, `accessor`) | Playbook: renewed each deploy, replaced if invalid |
-| `secret/tls/ca`                        | `root_ca`, `intermediate_ca`, `ca_chain` (public)       | Playbook, when changed                             |
-| `secret/tls/vault`, `secret/tls/nginx` | `certificate`, `ca_chain` (public, no private keys)     | Playbook, when changed                             |
-| `secret/grub`                          | GRUB password hash                                      | Playbook (first run)                               |
-| `secret/vaultPass/<folder>/<site>`     | VaultPass entries                                       | Users (own folder), admins (`default/`)            |
+| Path                                   | Contents                                                | Written by                                                           |
+|----------------------------------------|---------------------------------------------------------|----------------------------------------------------------------------|
+| `secret/tokens/admin`, `.../readonly`  | One periodic daily-use token each (`token`, `accessor`) | Playbook: renewed each deploy, replaced if invalid                   |
+| `secret/tls/ca_bundle`                 | `root_ca`, `intermediate_ca`, `ca_chain` (public)       | Playbook, when changed                                               |
+| `secret/tls/vault`, `secret/tls/nginx` | `certificate`, `ca_chain` (public, no private keys)     | Vault Agent on every renewal (`vault-agent-publish-cert`) + playbook |
+| `secret/grub`                          | GRUB password hash                                      | Playbook (first run)                                                 |
+| `secret/vaultPass/<folder>/<site>`     | VaultPass entries                                       | Users (own folder), admins (`default/`)                              |
 
 `ssh-ca/` and `ssh-otp/` are SSH secrets engines, not KV stores. They
 hold roles and the CA configuration and create credentials on request,

@@ -1450,7 +1450,7 @@ other certificates had no copy.
 
 **Fix:** public material only, rewritten only when it changes:
 
-- `secret/tls/ca`: `root_ca`, `intermediate_ca`, `ca_chain`
+- `secret/tls/ca_bundle`: `root_ca`, `intermediate_ca`, `ca_chain`
   (intermediate + root);
 - `secret/tls/vault` and `secret/tls/nginx`: `certificate` and
   `ca_chain`.
@@ -1460,7 +1460,7 @@ stale private key with them. The PKI engine remains the authoritative
 source (`/v1/pki/ca/pem`, `/v1/pki_int/ca_chain`, no token needed).
 Leaf private keys are never copied into KV.
 
-**Status:** Resolved -- 2026-11-26 -- `tls/ca` (`root_ca`,
+**Status:** Resolved -- 2026-11-26 -- `tls/ca_bundle` (`root_ca`,
 `intermediate_ca`, `ca_chain`), `tls/vault` and `tls/nginx`
 (`certificate`, `ca_chain`) were written. Their certificates match the
 live Vault and Nginx certificates byte for byte, and no private keys
@@ -1508,15 +1508,62 @@ yet got **200 reading `secret/tokens/admin`**. Anyone holding the
 `secret/metadata/*` read/list, with an explicit **deny** on
 `secret/data/tokens/*` and `secret/metadata/tokens/*`. Verification
 uses the stored read-only token to check: list `secret/` = 200, read
-`tls/ca` = 200, read `tokens/admin` = 403, write = 403. Before the
+`tls/ca_bundle` = 200, read `tokens/admin` = 403, write = 403. Before the
 policy was deployed, that assertion failed on the old policy, as it
 should.
 
 **Status:** Resolved -- 2026-11-26 -- before the fix: list `secret/` =
 403, read `tokens/admin` = **200**. After: list `secret/` = 200, read
-`tls/ca` = 200, read `tokens/admin` = 403, list `tokens/` = 403,
+`tls/ca_bundle` = 200, read `tokens/admin` = 403, list `tokens/` = 403,
 write = 403. `make validate`: verify `ok=127 failed=0`, 13/13, 5/5,
 idempotency `changed=21`, 0 AVCs.
+
+---
+
+### 57. KV copies of the Vault/Nginx leaf certs went stale between deploys
+
+**Symptoms:** `secret/tls/vault` and `secret/tls/nginx` matched the live
+certificates only right after a deploy. Vault Agent re-issues both leaf
+certificates on every agent restart (including every reboot, since #43),
+so the KV copies were usually out of date.
+
+**Root Cause:** Only the playbook wrote the copies, while the Agent
+renews the certificates. `tls/ca_bundle` is unaffected: the CAs change
+only through Ansible.
+
+**Fix:** event-driven publishing at renewal time:
+
+- Vault Agent writes its own token to a file sink
+  (`agent-run/agent-token.tmp`: 0400 vault-only, loopback-bound, 1h TTL,
+  removed at boot).
+- The new policy `vault-agent-tls-publish` allows only
+  `secret/data/tls/{vault,nginx}`.
+- The split scripts call `vault-agent-publish-cert` right after
+  swapping in a renewed certificate. It writes the public certificate
+  and `ca_chain` only if they changed, never a private key, and never
+  fails the swap.
+- The playbook still reconciles all three paths on each deploy.
+- Verification asserts that both KV copies equal the live certificates,
+  and that `tls/ca_bundle` parses and matches the on-disk CA files.
+
+**Found while testing:** the playbook's copies ended with a **literal
+`\n`** instead of a newline (Jinja does not expand `'\n'` inside the
+folded `set_fact` expression), so every Ansible-written PEM, including
+`tls/ca_bundle`, was unparsable. Fixed with a real newline variable
+(`_nl: "\n"`); playbook and publisher output are now byte-identical.
+The Nginx publish also needed `vault.te` 1.6.0: `read` on the
+`httpd_config_t` cert the Agent itself writes, and
+`miscfiles_read_generic_certs`, so the publisher's TLS client reads the
+system OpenSSL/crypto-policy config.
+
+**Status:** Resolved -- 2026-11-27 -- a forced renewal of both leaf
+certificates (bundles removed, agent restarted, no playbook run) was
+published within seconds: `secret/tls/vault` and `secret/tls/nginx`
+both matched the live serials, with 0 AVCs. `tls/ca` was renamed
+`tls/ca_bundle` (the old path is deleted by the playbook), and its PEMs
+now parse and match the on-disk CAs. `make validate`: verify `ok=127
+failed=0` (sync and validity assertions included), 13/13, 5/5,
+idempotency `changed=21`.
 
 ---
 
