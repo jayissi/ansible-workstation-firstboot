@@ -1,24 +1,126 @@
 ---
 # roles/vault/tasks/vaultpass.yml
-# Seed VaultPass KV path and create read-only policy
+# VaultPass folders and policies (KNOWN_ISSUES #52).
+#
+# Layout under the KV v2 mount `secret/` (VaultPass store `secret/vaultPass`):
+#   vaultPass/default/  shared, READ-ONLY for VaultPass users; curated by Vault
+#                       admins from the CLI/UI (vault-admin-full grants
+#                       secret/data/* CRUD)
+#   vaultPass/<user>/   personal, read/write for that user only
+# Access follows the client certificate CN: cert role vaultpass-<user>
+# (cert_auth.yml) accepts only "<user>{{ vault_vaultpass_cn_suffix }}" and grants
+# vaultpass + vaultpass-user-<user>. Folders and secrets are never deleted
+# automatically; policies/roles of users removed from the list are.
 
-- name: Vaultpass | Seed VaultPass KV init entry
+- name: Vaultpass | Compute VaultPass folders
+  ansible.builtin.set_fact:
+    _vault_vaultpass_folders: "{{ ['default'] + vault_vaultpass_users }}"
+
+# A KV folder only exists while it holds a key. An EMPTY folder therefore
+# gets a placeholder so VaultPass can list it (and a new user can save a
+# first entry into it); once the folder holds a real entry the placeholder
+# is removed (KNOWN_ISSUES #55). Its name is an anchored regex that can
+# never match a URL (VaultPass treats key names as URL patterns).
+- name: Vaultpass | List folder contents
   ansible.builtin.uri:
-    url: "{{ vault_addr }}/v1/secret/data/vaultPass/default/.init"
+    url: "{{ vault_addr }}/v1/secret/metadata/vaultPass/{{ item }}/"
+    method: LIST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    ca_path: "{{ _vault_ca_path }}"
+    status_code:
+      - 200
+      - 404
+  loop: "{{ _vault_vaultpass_folders }}"
+  register: _vault_vaultpass_folder_list
+
+- name: Vaultpass | Classify folders (empty vs holding real entries)
+  ansible.builtin.set_fact:
+    _vault_vaultpass_folder_state: >-
+      {{ _vault_vaultpass_folder_state | default({}) | combine({
+           item.item: {
+             'has_placeholder': vault_vaultpass_placeholder in (item.json.data['keys'] | default([])),
+             'real_entries': (item.json.data['keys'] | default([])
+                              | reject('in', [vault_vaultpass_placeholder, '.init']) | list | length)
+           }
+         }) }}
+  loop: "{{ _vault_vaultpass_folder_list.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Vaultpass | Create placeholders in empty folders
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/secret/data/vaultPass/{{ item.key }}/{{ vault_vaultpass_placeholder | urlencode }}"
     method: POST
     headers:
       X-Vault-Token: "{{ _vault_token }}"
     body_format: json
     body:
+      options:
+        cas: 0
       data:
-        initialized: true
+        purpose: "VaultPass folder placeholder (never matches a URL; removed once the folder has entries)"
         created_by: "ansible-workstation-firstboot"
     ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
+  loop: "{{ _vault_vaultpass_folder_state | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - item.value.real_entries == 0
+    - not item.value.has_placeholder
+  changed_when: true
 
-- name: Vaultpass | Create vaultpass policy
+- name: Vaultpass | Remove placeholders from folders that hold real entries
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/secret/metadata/vaultPass/{{ item.key }}/{{ vault_vaultpass_placeholder | urlencode }}"
+    method: DELETE
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    ca_path: "{{ _vault_ca_path }}"
+    status_code:
+      - 204
+  loop: "{{ _vault_vaultpass_folder_state | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - item.value.real_entries > 0
+    - item.value.has_placeholder
+  changed_when: true
+
+# The old placeholder name ".init" is a regex matching any URL containing
+# "<char>init", so VaultPass could offer it on unrelated sites.
+- name: Vaultpass | Check for the legacy .init placeholder
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/secret/metadata/vaultPass/default/.init"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    ca_path: "{{ _vault_ca_path }}"
+    status_code:
+      - 200
+      - 404
+  register: _vault_vaultpass_legacy_init
+
+- name: Vaultpass | Remove the legacy .init placeholder
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/secret/metadata/vaultPass/default/.init"
+    method: DELETE
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    ca_path: "{{ _vault_ca_path }}"
+    status_code:
+      - 204
+  when: _vault_vaultpass_legacy_init.status == 200
+  changed_when: true
+
+# Shared policy: every VaultPass user. default/ is read-only; LIST on the
+# store root lets VaultPass Options discover folders (all folder names --
+# i.e. usernames -- are visible, contents are not; same as upstream's
+# documented default policy).
+- name: Vaultpass | Create shared vaultpass policy (default/ read-only)
   ansible.builtin.uri:
     url: "{{ vault_addr }}/v1/sys/policies/acl/{{ vault_vaultpass_policy_name }}"
     method: PUT
@@ -27,10 +129,15 @@
     body_format: json
     body:
       policy: |
-        path "secret/data/vaultPass/*" {
-          capabilities = ["create", "read", "update", "delete"]
+        # Folder discovery (VaultPass Options lists the store root)
+        path "secret/metadata/vaultPass/" {
+          capabilities = ["list"]
         }
-        path "secret/metadata/vaultPass/*" {
+        # Shared space: read-only for VaultPass users (admins curate it)
+        path "secret/data/vaultPass/default/*" {
+          capabilities = ["read"]
+        }
+        path "secret/metadata/vaultPass/default/*" {
           capabilities = ["list"]
         }
         path "auth/token/lookup-self" {
@@ -46,3 +153,52 @@
     status_code:
       - 200
       - 204
+
+- name: Vaultpass | Create personal folder policies
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/policies/acl/vaultpass-user-{{ item }}"
+    method: PUT
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      policy: |
+        # Personal VaultPass folder for {{ item }} (read/write)
+        path "secret/data/vaultPass/{{ item }}/*" {
+          capabilities = ["create", "read", "update", "delete"]
+        }
+        path "secret/metadata/vaultPass/{{ item }}/*" {
+          capabilities = ["read", "list", "delete"]
+        }
+    ca_path: "{{ _vault_ca_path }}"
+    status_code:
+      - 200
+      - 204
+  loop: "{{ vault_vaultpass_users }}"
+
+- name: Vaultpass | List ACL policies
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/policies/acl"
+    method: LIST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    ca_path: "{{ _vault_ca_path }}"
+    status_code:
+      - 200
+  register: _vault_vaultpass_acl_list
+
+- name: Vaultpass | Remove policies of users no longer in vault_vaultpass_users
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/sys/policies/acl/{{ item }}"
+    method: DELETE
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    ca_path: "{{ _vault_ca_path }}"
+    status_code:
+      - 204
+  loop: >-
+    {{ _vault_vaultpass_acl_list.json.data['keys'] | default([])
+       | select('match', '^vaultpass-user-')
+       | reject('in', vault_vaultpass_users | map('regex_replace', '^', 'vaultpass-user-') | list)
+       | list }}
+  changed_when: true

@@ -233,10 +233,13 @@
   ansible.builtin.shell:
     cmd: |
       set -o pipefail
-      want=$(openssl x509 -in {{ vault_cert_dir | default('/etc/vault.d/certs') }}/client.crt -noout -serial | cut -d= -f2)
+      cdir={{ vault_cert_dir | default('/etc/vault.d/certs') }}
       echo "units=$(systemctl is-active vault-browser-cert-sync.path vault-browser-cert-sync.timer | sort -u | paste -sd,)"
-      for u in {{ (vault_browser_cert_sync_users | default([common_admin_user])) | join(' ') }}; do
-        home=$(getent passwd "$u" | cut -d: -f6)
+      for u in {{ (vault_vaultpass_users | default([common_admin_user])) | join(' ') }}; do
+        home=$(getent passwd "$u" | cut -d: -f6) || continue
+        if [ "$u" = "{{ common_admin_user }}" ]; then crt="$cdir/client.crt"; else crt="$cdir/clients/$u.crt"; fi
+        [ -s "$crt" ] || continue
+        want=$(openssl x509 -in "$crt" -noout -serial | cut -d= -f2)
         as_u() { setpriv --reuid="$u" --regid="$(id -g "$u")" --init-groups env HOME="$home" "$@"; }
         for db in "$home/.pki/nssdb" "$home"/.config/mozilla/firefox/*/ "$home"/.mozilla/firefox/*/; do
           db=${db%/}
@@ -260,6 +263,148 @@
     success_msg: "PASS: browser NSS databases hold the current client cert; renewal sync path+timer active -- {{ verification_browser_cert_state.stdout_lines | select('match', '^current ') | list }}"
     fail_msg: "FAIL: browser client cert stale or sync units inactive -- {{ verification_browser_cert_state.stdout_lines }}"
   when: verification_browser_sync_unit.stat.exists
+
+# ==================================================================
+# VaultPass folders: personal read/write, shared default/ read-only
+# (KNOWN_ISSUES #52). Non-mutating: the admin's VaultPass cert logs in
+# through Nginx, sys/capabilities-self reports what that token may do,
+# then the token is revoked. The token never leaves the shell.
+# ==================================================================
+- name: Outcomes | Gather VaultPass access for the admin's certificate
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      C={{ vault_cert_dir | default('/etc/vault.d/certs') }}
+      H={{ verification_vault_hostname }}
+      U={{ common_admin_user }}
+      api() { curl -s --cacert "$C/root.crt" --resolve "$H:443:127.0.0.1" "$@"; }
+      tok=$(api --cert "$C/client.crt" --key "$C/client.key" -X POST "https://$H/v1/auth/cert/login" \
+        | python3 -c "import sys,json;print((json.load(sys.stdin).get('auth') or {}).get('client_token',''))")
+      [ -n "$tok" ] || { echo "login=failed"; exit 0; }
+      api -H "X-Vault-Token: $tok" "https://$H/v1/auth/token/lookup-self" \
+        | python3 -c "import sys,json;print('policies=' + ','.join(sorted(json.load(sys.stdin)['data']['policies'])))"
+      for p in "own=secret/data/vaultPass/$U/vp-probe" "shared=secret/data/vaultPass/default/vp-probe" \
+               "root=secret/metadata/vaultPass/" "other=secret/data/vaultPass/vp-nonexistent-user/vp-probe"; do
+        k=${p%%=*}; path=${p#*=}
+        api -H "X-Vault-Token: $tok" -X POST -d "{\"paths\":[\"$path\"]}" "https://$H/v1/sys/capabilities-self" \
+          | python3 -c "import sys,json;print('$k=' + ','.join(sorted(json.load(sys.stdin)['$path'])))"
+      done
+      api -o /dev/null -H "X-Vault-Token: $tok" -X POST "https://$H/v1/auth/token/revoke-self"
+  register: verification_vaultpass_access
+  changed_when: false
+
+- name: Outcomes | List cert roles and check the legacy placeholder
+  ansible.builtin.uri:
+    url: "{{ verification_vault_addr }}/v1/{{ item.path }}"
+    method: "{{ item.method }}"
+    headers:
+      X-Vault-Token: "{{ _vault_token_raw | default('') }}"
+    ca_path: "{{ verification_vault_ca }}"
+    status_code:
+      - 200
+      - 404
+  loop:
+    - path: auth/cert/certs
+      method: LIST
+    - path: secret/metadata/vaultPass/default/.init
+      method: GET
+  loop_control:
+    label: "{{ item.path }}"
+  register: verification_vaultpass_objects
+  no_log: true
+  when: (_vault_token_raw | default('')) | length > 0
+
+- name: Outcomes | Assert VaultPass folder access follows the certificate CN
+  ansible.builtin.assert:
+    that:
+      - "'policies=default,vaultpass,vaultpass-user-' ~ common_admin_user in verification_vaultpass_access.stdout_lines"
+      - "'own=create,delete,read,update' in verification_vaultpass_access.stdout_lines"
+      - "'shared=read' in verification_vaultpass_access.stdout_lines"
+      - "'root=list' in verification_vaultpass_access.stdout_lines"
+      - "'other=deny' in verification_vaultpass_access.stdout_lines"
+      - >-
+        verification_vaultpass_objects is skipped or
+        ('vaultpass-' ~ common_admin_user) in (verification_vaultpass_objects.results[0].json.data['keys'] | default([]))
+      - >-
+        verification_vaultpass_objects is skipped or
+        'workstation-client' not in (verification_vaultpass_objects.results[0].json.data['keys'] | default([]))
+      - "verification_vaultpass_objects is skipped or verification_vaultpass_objects.results[1].status == 404"
+    quiet: true
+    success_msg: "PASS: VaultPass -- own folder read/write, default/ read-only, other users' folders denied; CN-mapped cert role; legacy role/placeholder removed"
+    fail_msg: "FAIL: VaultPass access wrong -- {{ verification_vaultpass_access.stdout_lines }}"
+
+# ==================================================================
+# Vault hygiene (KNOWN_ISSUES #53-#55): one daily token per purpose,
+# public-only TLS reference copies, placeholders only in empty folders.
+# The root token is passed via the environment; output is counts/names.
+# ==================================================================
+- name: Outcomes | Gather Vault token, TLS-copy and placeholder state
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      B={{ verification_vault_addr }}/v1
+      v() { curl -s --cacert {{ verification_vault_ca }} -H "X-Vault-Token: $VT" "$@"; }
+      TMPDIR_HYG=$(mktemp -d); trap 'rm -rf "$TMPDIR_HYG"' EXIT
+      for a in $(v -X LIST $B/auth/token/accessors | python3 -c "import sys,json;print(' '.join(json.load(sys.stdin)['data']['keys']))"); do
+        v -X POST -d "{\"accessor\":\"$a\"}" $B/auth/token/lookup-accessor \
+          | python3 -c "import sys,json;print((json.load(sys.stdin).get('data') or {}).get('display_name'))"
+      done > "$TMPDIR_HYG/names"
+      echo "admin_tokens=$(grep -cx 'token-admin-daily' "$TMPDIR_HYG/names")"
+      echo "readonly_tokens=$(grep -cx 'token-monitoring-readonly' "$TMPDIR_HYG/names")"
+      for n in admin readonly; do
+        t=$(v $B/secret/data/tokens/$n | python3 -c "import sys,json;print(json.load(sys.stdin)['data']['data']['token'])")
+        v -X POST -d "{\"token\":\"$t\"}" $B/auth/token/lookup \
+          | python3 -c "import sys,json;d=(json.load(sys.stdin).get('data') or {});print('stored_${n}=' + ('periodic' if (d.get('period') or 0) > 0 else 'invalid-or-not-periodic'))"
+      done
+      RT=$(v $B/secret/data/tokens/readonly | python3 -c "import sys,json;print(json.load(sys.stdin)['data']['data']['token'])")
+      rcode() { curl -s -o /dev/null -w '%{http_code}' --cacert {{ verification_vault_ca }} -H "X-Vault-Token: $RT" "$@"; }
+      echo "ro_list_secret=$(rcode -X LIST $B/secret/metadata/)"
+      echo "ro_read_tls=$(rcode $B/secret/data/tls/ca)"
+      echo "ro_read_admin_token=$(rcode $B/secret/data/tokens/admin)"
+      echo "ro_write=$(rcode -X POST -d '{"data":{"x":"y"}}' $B/secret/data/vp-ro-probe)"
+      unset RT
+      for p in ca vault nginx root-ca server; do
+        v $B/secret/data/tls/$p | python3 -c "import sys,json;d=(json.load(sys.stdin).get('data') or {}).get('data');print('tls_$p=' + (','.join(sorted(d)) if d else 'absent'))"
+      done
+      for f in $(v -X LIST $B/secret/metadata/vaultPass/ | python3 -c "import sys,json;print(' '.join(k.rstrip('/') for k in json.load(sys.stdin)['data']['keys']))"); do
+        v -X LIST $B/secret/metadata/vaultPass/$f/ | python3 -c "
+      import sys,json
+      k=json.load(sys.stdin)['data']['keys']; ph='{{ vault_vaultpass_placeholder | default('^vaultpass-placeholder$') }}'
+      real=[x for x in k if x not in (ph,'.init')]
+      ok=(bool(real) and ph not in k) or (not real and ph in k)
+      print('placeholder_$f=' + ('ok' if ok else 'wrong'))"
+      done
+  environment:
+    VT: "{{ _vault_token_raw | default('') }}"
+  register: verification_vault_hygiene
+  changed_when: false
+  no_log: true
+  when: (_vault_token_raw | default('')) | length > 0
+
+- name: Outcomes | Assert Vault token, TLS-copy and placeholder hygiene
+  ansible.builtin.assert:
+    that:
+      - "'admin_tokens=1' in verification_vault_hygiene.stdout_lines"
+      - "'readonly_tokens=1' in verification_vault_hygiene.stdout_lines"
+      - "'stored_admin=periodic' in verification_vault_hygiene.stdout_lines"
+      - "'stored_readonly=periodic' in verification_vault_hygiene.stdout_lines"
+      - "'tls_ca=ca_chain,intermediate_ca,root_ca' in verification_vault_hygiene.stdout_lines"
+      - "'tls_vault=ca_chain,certificate' in verification_vault_hygiene.stdout_lines"
+      - "'tls_root-ca=absent' in verification_vault_hygiene.stdout_lines"
+      - "'tls_server=absent' in verification_vault_hygiene.stdout_lines"
+      - "'ro_list_secret=200' in verification_vault_hygiene.stdout_lines"
+      - "'ro_read_tls=200' in verification_vault_hygiene.stdout_lines"
+      - "'ro_read_admin_token=403' in verification_vault_hygiene.stdout_lines"
+      - "'ro_write=403' in verification_vault_hygiene.stdout_lines"
+      - "verification_vault_hygiene.stdout_lines | select('match', '^placeholder_.*=wrong') | list | length == 0"
+    quiet: true
+    success_msg: >-
+      PASS: one periodic admin + one read-only token (lists/reads KV, cannot read tokens/ or write);
+      TLS copies public-only (tls/ca, tls/vault, tls/nginx); placeholders only in empty folders
+    fail_msg: >-
+      FAIL: Vault hygiene -- {{ verification_vault_hygiene.stdout_lines
+      | reject('match', '^stored_') | list }}
+  when: verification_vault_hygiene is not skipped
 
 # ==================================================================
 # Platform: crypto policy, sysctls, NTS (Step 2b)
@@ -415,3 +560,32 @@
       Vault Agent AppRole secret_id expires in {{ verification_approle_days.stdout | default('?') }} day(s)
       (auto-rotated below 30; force with `make vault-rotate-secret-id`)
   when: verification_approle_days is not skipped
+
+# On-host expiry warning is wired up and points at the live secret_id
+# (KNOWN_ISSUES #51): the recorded expiry must equal Vault's latest
+# expiration_time, there must be exactly one secret_id (superseded ones
+# destroyed on rotation), and the daily check timer must be active.
+- name: Outcomes | Gather AppRole expiry-check state
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      echo "recorded=$(head -1 /etc/vault-agent.d/approle-secret-id.expires 2>/dev/null || echo missing)"
+      echo "timer=$(systemctl is-active vault-approle-expiry-check.timer)"
+  register: verification_approle_check_state
+  changed_when: false
+  when: verification_approle_lookups is not skipped
+
+- name: Outcomes | Assert AppRole expiry check tracks the live secret_id
+  ansible.builtin.assert:
+    that:
+      - "'timer=active' in verification_approle_check_state.stdout_lines"
+      - >-
+        ('recorded=' ~ (verification_approle_lookups.results | selectattr('json', 'defined')
+        | map(attribute='json.data.expiration_time') | max)) in verification_approle_check_state.stdout_lines
+      - "verification_approle_lookups.results | selectattr('json', 'defined') | list | length == 1"
+    quiet: true
+    success_msg: "PASS: single AppRole secret_id; expiry recorded for the on-host check; daily timer active"
+    fail_msg: >-
+      FAIL: AppRole expiry check out of sync -- {{ verification_approle_check_state.stdout_lines }}
+      (accessors: {{ verification_approle_lookups.results | selectattr('json', 'defined') | list | length }})
+  when: verification_approle_lookups is not skipped

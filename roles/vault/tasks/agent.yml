@@ -66,6 +66,27 @@
     group: root
     mode: "0750"
 
+# VaultPass users other than the admin get their own Agent-issued client
+# cert, but only if they exist as Linux accounts (the cert is synced into
+# their own browsers). KNOWN_ISSUES #52.
+- name: Agent | Read local accounts for per-user client certs
+  ansible.builtin.getent:
+    database: passwd
+
+- name: Agent | Compute VaultPass users that get their own client cert
+  ansible.builtin.set_fact:
+    _vault_vaultpass_cert_users_extra: >-
+      {{ vault_vaultpass_users | reject('equalto', common_admin_user)
+         | select('in', getent_passwd.keys() | list) | list }}
+
+- name: Agent | Ensure per-user client cert directory exists
+  ansible.builtin.file:
+    path: "{{ vault_cert_dir }}/clients"
+    state: directory
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: "0750"
+
 - name: Agent | Deploy Vault Agent configuration
   ansible.builtin.template:
     src: vault-agent.hcl.j2
@@ -164,3 +185,56 @@
   loop:
     - vault-agent-secret
     - vault-agent
+
+# ------------------------------------------------------------------
+# AppRole secret_id expiry warning (KNOWN_ISSUES #51)
+# ------------------------------------------------------------------
+# Ansible is the only rotator (trusted-orchestrator pattern); this daily
+# on-host check reads the expiry Ansible records (pki_engine.yml) and
+# warns via the journal and /etc/motd.d before the secret_id expires.
+- name: Agent | Deploy AppRole secret_id expiry check script
+  ansible.builtin.template:
+    src: vault-approle-expiry-check.sh.j2
+    dest: /usr/local/bin/vault-approle-expiry-check
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Agent | Deploy AppRole secret_id expiry check units
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.name }}"
+    content: "{{ item.content }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - name: vault-approle-expiry-check.service
+      content: |
+        [Unit]
+        Description=Warn before the Vault Agent AppRole secret_id expires
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/bin/vault-approle-expiry-check
+    - name: vault-approle-expiry-check.timer
+      content: |
+        [Unit]
+        Description=Daily Vault Agent AppRole secret_id expiry check
+
+        [Timer]
+        OnBootSec=5min
+        OnCalendar=daily
+        Persistent=true
+
+        [Install]
+        WantedBy=timers.target
+  loop_control:
+    label: "{{ item.name }}"
+  register: __vault_approle_check_units
+
+- name: Agent | Enable AppRole secret_id expiry check timer
+  ansible.builtin.systemd_service:
+    name: vault-approle-expiry-check.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ __vault_approle_check_units is changed }}"

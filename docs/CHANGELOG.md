@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- VaultPass per-user folders: `vault_vaultpass_users` creates a
+  read/write `secret/vaultPass/<user>/` folder, a policy and a CN-mapped
+  cert role per user (plus an Agent-issued client cert synced into the
+  browsers of users with a Linux account); shared `default/` is now
+  read-only for VaultPass users and curated by Vault admins
+  (KNOWN_ISSUES #52)
+- `vault-approle-expiry-check` daily timer: warns in the journal and
+  login banner when the Vault Agent AppRole `secret_id` has fewer than
+  14 days left (fails the unit below 7). Ansible records the expiry on
+  every run; verification asserts it matches Vault (KNOWN_ISSUES #51)
 - `vault-browser-cert-sync` (+ `.path` on `client.crt`, 15-min `.timer`):
   re-imports the Agent-renewed client certificate into Chrome and every
   Firefox profile, so browser TLS-certificate login survives the 72h
@@ -126,6 +136,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `vault-admin-readonly`: could read `secret/tokens/admin` (privilege
+  escalation to admin) but could not list KV v2 secrets; now
+  `secret/metadata/*` read/list and an explicit deny on
+  `secret/*/tokens/*` (#56)
+- Daily-use tokens: every deploy created a new `admin-daily` /
+  `monitoring-readonly` token and never revoked the old one (27 live
+  admin tokens). Now one periodic token per purpose is renewed, replaced
+  only when invalid (old one revoked); strays are revoked (#53)
+- `secret/tls/*`: replaced the stale `tls/server` copy (incl. a private
+  key) and `tls/root-ca` with public-only `tls/ca`, `tls/vault`,
+  `tls/nginx`, written only when changed (#54)
+- VaultPass placeholders now exist only in empty folders (#55)
 - GDM greeter ran a full GNOME desktop at boot without a password:
   the new CIS session task created a partial `/etc/dconf/profile/gdm`
   that shadowed the vendor profile (`greeter-dconf-defaults`); the

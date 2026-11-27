@@ -59,7 +59,7 @@ vault_pki_vault_server_cn: "HashiCorp Vault"
 vault_pki_vault_server_ou: "Secrets Management"
 vault_pki_nginx_cn: "Nginx Gateway"
 vault_pki_nginx_ou: "Network Services"
-vault_pki_client_auth_cn: "{{ common_admin_user }} - VaultPass"
+vault_pki_client_auth_cn: "{{ common_admin_user }}{{ vault_vaultpass_cn_suffix }}"
 vault_pki_client_auth_ou: "Workstation Auth"
 vault_pki_nginx_proxy_client_cn: "Nginx Proxy Client"
 vault_pki_nginx_proxy_client_ou: "Internal Services"
@@ -97,6 +97,16 @@ vault_ssh_ca_max_ttl: "72h"
 vault_vaultpass_enabled: true
 vault_vaultpass_kv_path: "secret/vaultPass"
 vault_vaultpass_policy_name: "vaultpass"
+# VaultPass users (KNOWN_ISSUES #52). Each gets a personal read/write
+# folder secret/vaultPass/<user>/ and a cert-auth role vaultpass-<user> that
+# accepts only the CN "<user><vault_vaultpass_cn_suffix>". secret/vaultPass/default/
+# is shared and read-only for VaultPass users (admins curate it). Users that
+# also exist as Linux accounts get an Agent-issued client cert synced into
+# their browsers. Removing a user deletes their role and policy, never data.
+vault_vaultpass_users:
+  - "{{ common_admin_user }}"
+vault_vaultpass_cn_suffix: " - VaultPass"
+vault_vaultpass_placeholder: "^vaultpass-placeholder$"
 vault_vaultpass_token_ttl: "1h"
 vault_vaultpass_token_max_ttl: "24h"
 
@@ -110,8 +120,7 @@ vault_client_cert_max_ttl: "168h"
 # client cert into these users' Chrome (~/.pki/nssdb) and Firefox NSS
 # databases on every renewal, plus a periodic run that picks up Firefox
 # profiles created after the deploy.
-vault_browser_cert_sync_users:
-  - "{{ common_admin_user }}"
+vault_browser_cert_sync_users: "{{ vault_vaultpass_users }}"
 vault_browser_cert_nickname: "VaultPass Client Cert"
 vault_browser_cert_sync_interval: 15min
 vault_client_cert_tpm2_handle: "0x81000001"
@@ -125,3 +134,23 @@ vault_client_cert_tpm2_handle: "0x81000001"
 vault_approle_secret_id_ttl: "2160h"
 vault_approle_secret_id_rotate_before_seconds: 2592000
 vault_approle_force_rotate: false
+# On-host expiry warning (KNOWN_ISSUES #51). Rotation only happens on
+# Ansible runs; this daily check warns (journal + /etc/motd.d) below
+# warn_days and fails the unit below crit_days. Deploy at least every
+# ~60 days (rotation triggers below 30 days remaining).
+vault_approle_expiry_file: /etc/vault-agent.d/approle-secret-id.expires
+vault_approle_expiry_warn_days: 14
+vault_approle_expiry_crit_days: 7
+
+# Daily-use tokens stored in secret/tokens/<name> (KNOWN_ISSUES #53): one
+# periodic token per purpose, renewed on every deploy, replaced (and the old
+# one revoked) only when missing/invalid. A periodic token expires only if it
+# is not renewed within vault_daily_token_period (UI sessions renew it too).
+vault_daily_token_period: "768h"
+vault_daily_tokens:
+  - name: admin
+    display_name: admin-daily
+    policy: vault-admin-full
+  - name: readonly
+    display_name: monitoring-readonly
+    policy: vault-admin-readonly

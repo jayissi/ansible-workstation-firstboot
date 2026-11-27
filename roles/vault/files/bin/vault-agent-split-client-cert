@@ -9,9 +9,12 @@
 
 set -euo pipefail
 
-COMBINED="/opt/vault/agent-run/client-auth-combined.tmp"
-CERT_OUT="/etc/vault.d/certs/client.crt"
-KEY_OUT="/etc/vault.d/certs/client.key"
+# Optional args (per-user certs, KNOWN_ISSUES #52):
+#   vault-agent-split-client-cert <combined> <cert-out> <key-out>
+# No args = the admin's cert (historic paths).
+COMBINED="${1:-/opt/vault/agent-run/client-auth-combined.tmp}"
+CERT_OUT="${2:-/etc/vault.d/certs/client.crt}"
+KEY_OUT="${3:-/etc/vault.d/certs/client.key}"
 
 [ -f "${COMBINED}" ] || { echo "No combined client cert render found" >&2; exit 1; }
 

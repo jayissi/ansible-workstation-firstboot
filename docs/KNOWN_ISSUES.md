@@ -1048,6 +1048,13 @@ lease TTL (768h), which caps `secret_id_ttl`.
 `secret_id` (the mount is tuned just after) and rotates it once.
 
 **Status:** Resolved -- 2026-11-25 -- passed post-redeploy validation.
+Rotation exercised end to end 2026-11-26 (`make vault-rotate-secret-id`):
+the capped secret_id (expiry 2026-12-27) was replaced by one expiring
+2027-02-24 (the full 90 days), and the superseded accessor was
+destroyed. The old secret_id is rejected (`invalid role or secret ID`),
+the new one authenticates, the agent re-authenticated after the
+restart, and certificate renewal continued (client cert re-issued,
+browsers re-synced, Nginx login OK).
 
 ---
 
@@ -1318,6 +1325,198 @@ the `.path` unit with no playbook run, leaving one private key per
 database. Final `make validate`: verify `ok=120 failed=0` (new
 assertion included), 13/13, 5/5, idempotency `changed=21` (ceiling
 24), 0 AVCs.
+
+---
+
+### 51. AppRole `secret_id` rotation requires an Ansible run
+
+**Symptoms:** none yet. This is a latent outage. If nobody runs
+`make deploy` before the 90-day `secret_id` expires, Vault Agent fails
+its next 4-hourly re-authentication. Every Agent-renewed certificate
+(Vault TLS, Nginx, browser client cert) then stops renewing, and they
+expire within hours to 3 days.
+
+**Root Cause:** By design, Ansible is the only rotator (HashiCorp's
+"trusted orchestrator" pattern): rotation runs when fewer than 30 days
+remain, or on demand. The only warning was a WARN in `make verify`,
+which nobody sees unless they run it.
+
+**Fix (mitigation):** Every run records the active expiry in
+`/etc/vault-agent.d/approle-secret-id.expires` (Vault's absolute
+`expiration_time`, which keeps the task idempotent).
+`vault-approle-expiry-check.timer` (daily, `Persistent=true`) logs
+`auth.warning` and writes a login banner (`/etc/motd.d/50-vault-approle`)
+below 14 days, and fails the unit below 7 days. It needs no Vault
+token. Verification asserts that the recorded expiry matches Vault,
+that exactly one secret_id exists, and that the timer is active.
+Autonomous on-host rotation was considered and not chosen, because it
+would add a second credential path.
+
+**Status:** Resolved (mitigated) -- 2026-11-26 -- timer active, and
+the recorded expiry (2027-02-24) matches Vault. The normal run logs OK
+(89 days); simulated <14 days gives `auth.warning` and the login banner;
+simulated <7 days fails the unit; the next normal run clears both.
+`make validate`: verify `ok=122 failed=0`, 13/13, 5/5, idempotency
+`changed=21`, 0 AVCs, and no rotation while the secret_id is healthy.
+
+---
+
+### 52. VaultPass: one shared writable folder, no per-user space
+
+**Symptoms:** VaultPass showed a single folder, `default/`, and every
+VaultPass user could create, change or delete anything in it. A
+user-created entry did not appear where the user looked: it was named
+after the site, `vault.internal`, not the title, and the Vault UI hid
+the store root.
+
+**Root Cause:** One cert role (`workstation-client`, admin CN only) and
+one policy (`vaultpass`: CRUD on `secret/vaultPass/*`). VaultPass lists
+whatever folders exist under its KV store path and offers them in its
+"Add key" dropdown. Only `default/` existed. The placeholder
+`default/.init` was also a URL regex (`.init` matches any URL
+containing `<char>init`), and every deploy rewrote it, adding a KV
+version each time.
+
+**Fix:** `vault_vaultpass_users` (inventory) drives everything:
+
+- a personal read/write folder `secret/vaultPass/<user>/` per user;
+- the policy `vaultpass-user-<user>`;
+- a cert role `vaultpass-<user>` accepting only CN `<user> - VaultPass`;
+- for users with a Linux account, an Agent-issued client cert synced
+  into their browsers.
+
+Shared `default/` is read-only for VaultPass users and curated by Vault
+admins. `workstation-client` and `.init` are removed. Placeholders
+(`^vaultpass-placeholder$`, never matches a URL) are created only when
+missing. Removing a user deletes their role and policy, never their
+data. Verification checks the admin's real certificate through Nginx:
+own folder read/write, `default/` read-only, other folders denied.
+
+**Status:** Resolved -- 2026-11-26 -- `vaultpass-jayissi` maps CN
+`jayissi - VaultPass` to `vaultpass` + `vaultpass-user-jayissi`. With the
+user's certificate through Nginx, the own folder allows full read/write;
+on `default/` reads succeed and create/update/delete return 403; the
+`secret/` root and `grub` return 403. A simulated second user `vptest`
+was isolated in both directions. Removing it deleted its role and
+policy and kept its data. The two user test entries were moved from
+`default/` to `jayissi/`, and `workstation-client` and `.init` were
+removed. `make validate`: verify `ok=125 failed=0`, 13/13, 5/5,
+idempotency `changed=21`, 0 AVCs.
+
+---
+
+### 53. Every deploy minted a new admin token and never revoked the old
+
+**Symptoms:** `secret/tokens/admin` was at version 25, and Vault held 27
+live `admin-daily` tokens (`vault-admin-full`) and 27
+`monitoring-readonly` tokens. Each stayed valid for up to 32 days, so
+any copy that ever leaked kept working.
+
+**Root Cause:** `pki_engine.yml` called `auth/token/create` (`ttl: 0`,
+which means the 32-day default maximum) on every run, and
+`backup_secrets.yml` overwrote the KV copy. Nothing revoked the
+previous token.
+
+**Fix:** `_daily_token.yml` keeps one **periodic** token per purpose
+(`vault_daily_tokens`, `vault_daily_token_period` 768h):
+
+- it looks up the stored token and renews it while it is valid and
+  correctly scoped;
+- otherwise it creates a replacement, stores it (with its accessor) and
+  revokes the old one;
+- every run also revokes any other `admin-daily` / `monitoring-readonly`
+  token, which cleared the backlog.
+
+A periodic token has no maximum lifetime: each renewal (deploy, or an
+active UI session) resets the period. Verification asserts exactly one
+of each and that the stored tokens are periodic.
+
+**Status:** Resolved -- 2026-11-26 -- the first run revoked 52 stray
+daily tokens and replaced the two current ones with periodic tokens
+(32-day period). Afterwards Vault held exactly one `admin-daily` and one
+`monitoring-readonly` token, and both stored tokens authenticate. A full
+re-run (`make validate`) left the KV versions unchanged (26) with no new
+tokens.
+
+---
+
+### 54. TLS copies in KV: stale server certificate and private key
+
+**Symptoms:** `secret/tls/server` held a Vault server certificate, the
+intermediate and its **private key**. It was written once at the first
+deploy and never updated, while Vault Agent re-issued the live
+certificate. `secret/tls/root-ca` held the Root CA only. Nginx and
+other certificates had no copy.
+
+**Fix:** public material only, rewritten only when it changes:
+
+- `secret/tls/ca`: `root_ca`, `intermediate_ca`, `ca_chain`
+  (intermediate + root);
+- `secret/tls/vault` and `secret/tls/nginx`: `certificate` and
+  `ca_chain`.
+
+The legacy `tls/root-ca` and `tls/server` were deleted, taking the
+stale private key with them. The PKI engine remains the authoritative
+source (`/v1/pki/ca/pem`, `/v1/pki_int/ca_chain`, no token needed).
+Leaf private keys are never copied into KV.
+
+**Status:** Resolved -- 2026-11-26 -- `tls/ca` (`root_ca`,
+`intermediate_ca`, `ca_chain`), `tls/vault` and `tls/nginx`
+(`certificate`, `ca_chain`) were written. Their certificates match the
+live Vault and Nginx certificates byte for byte, and no private keys
+are stored. `tls/root-ca` and `tls/server` were deleted. A re-run left
+all three at version 1 (no rewrite when unchanged).
+
+---
+
+### 55. VaultPass placeholders kept in folders that have entries
+
+**Symptoms:** `^vaultpass-placeholder$` stayed in `jayissi/` after it
+held real entries, which looked like leftover test data.
+
+**Root Cause:** A KV folder exists only while it holds a key. The
+placeholder is needed so an *empty* folder still appears in VaultPass,
+where a new user saves their first entry. Nothing removed it once real
+entries existed.
+
+**Fix:** each run lists every VaultPass folder. It creates the
+placeholder only in empty folders and removes it from folders that hold
+real entries. Verification asserts this per folder. If a user deletes
+their last entry, the folder disappears until the next deploy recreates
+the placeholder; saving into it still works, because KV creates paths
+on write.
+
+**Status:** Resolved -- 2026-11-26 -- the placeholder was removed from
+`jayissi/` (holds `vault.internal`) and kept in the empty `default/`.
+Verification asserts the rule per folder, and `make validate` passed:
+verify `ok=127 failed=0`, 13/13, 5/5, idempotency `changed=21`, 0 AVCs.
+
+---
+
+### 56. Read-only token could not list secrets but could read the admin token
+
+**Symptoms:** The `monitoring-readonly` token got 403 listing `secret/`,
+yet got **200 reading `secret/tokens/admin`**. Anyone holding the
+"read-only" token could take the admin token, a privilege escalation.
+
+**Root Cause:** `vault-admin-readonly` granted `read`/`list` on
+`secret/data/*`. On KV v2, listing and version metadata live under
+`secret/metadata/*`, so the `list` never applied, while `read` on
+`secret/data/*` also covered `secret/data/tokens/*`.
+
+**Fix:** The policy now grants `secret/data/*` read and
+`secret/metadata/*` read/list, with an explicit **deny** on
+`secret/data/tokens/*` and `secret/metadata/tokens/*`. Verification
+uses the stored read-only token to check: list `secret/` = 200, read
+`tls/ca` = 200, read `tokens/admin` = 403, write = 403. Before the
+policy was deployed, that assertion failed on the old policy, as it
+should.
+
+**Status:** Resolved -- 2026-11-26 -- before the fix: list `secret/` =
+403, read `tokens/admin` = **200**. After: list `secret/` = 200, read
+`tls/ca` = 200, read `tokens/admin` = 403, list `tokens/` = 403,
+write = 403. `make validate`: verify `ok=127 failed=0`, 13/13, 5/5,
+idempotency `changed=21`, 0 AVCs.
 
 ---
 

@@ -739,6 +739,49 @@
       changed_when: true
       no_log: true
 
+# Record the active secret_id expiry for the on-host check
+# (vault-approle-expiry-check, KNOWN_ISSUES #51). Rotation only happens
+# on Ansible runs; the daily timer warns before expiry without needing a
+# Vault token. Vault's absolute expiration_time is stable between runs,
+# so this file only changes when the secret_id does.
+- name: Pki Engine | List AppRole secret_id accessors (post-rotation)
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/auth/approle/role/vault-agent/secret-id"
+    method: LIST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    ca_path: "{{ _vault_ca_path }}"
+    status_code:
+      - 200
+      - 404
+  register: __vault_approle_accessors_now
+  no_log: true
+
+- name: Pki Engine | Look up active secret_id expiry (post-rotation)
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/auth/approle/role/vault-agent/secret-id-accessor/lookup"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      secret_id_accessor: "{{ item }}"
+    ca_path: "{{ _vault_ca_path }}"
+    status_code:
+      - 200
+  loop: "{{ __vault_approle_accessors_now.json.data['keys'] | default([]) }}"
+  register: __vault_approle_lookups_now
+  no_log: true
+
+- name: Pki Engine | Record active secret_id expiry for the on-host check
+  ansible.builtin.copy:
+    dest: "{{ vault_approle_expiry_file }}"
+    content: "{{ __vault_approle_lookups_now.results | map(attribute='json.data.expiration_time') | max }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+  when: __vault_approle_lookups_now.results | default([]) | length > 0
+
 # ------------------------------------------------------------------
 # GRUB password hash (only generate if not already stored)
 # ------------------------------------------------------------------
@@ -838,8 +881,16 @@
       X-Vault-Token: "{{ _vault_token }}"
     body_format: json
     body:
+      # KV v2: listing and version info live under secret/metadata/; the old
+      # "list" on secret/data/* never applied, so this token got 403 listing
+      # secrets. secret/data/tokens/* is DENIED: it holds the admin token,
+      # and read access to it would turn this read-only token into admin
+      # (KNOWN_ISSUES #56).
       policy: |
-        path "secret/data/*" { capabilities = ["read","list"] }
+        path "secret/data/*" { capabilities = ["read"] }
+        path "secret/metadata/*" { capabilities = ["read","list"] }
+        path "secret/data/tokens/*" { capabilities = ["deny"] }
+        path "secret/metadata/tokens/*" { capabilities = ["deny"] }
         path "pki_int/certs/*" { capabilities = ["read","list"] }
         path "sys/health" { capabilities = ["read"] }
     ca_path: "{{ _vault_ca_path }}"
@@ -847,42 +898,69 @@
       - 200
       - 204
 
-- name: Pki Engine | Create admin token for daily operations
+# One periodic token per purpose, reused and renewed on every run; a
+# replacement is created (and the old one revoked) only when the stored
+# token is missing or invalid (KNOWN_ISSUES #53).
+- name: Pki Engine | Maintain daily-use tokens (admin, read-only)
+  ansible.builtin.include_tasks: _daily_token.yml
+  loop: "{{ vault_daily_tokens }}"
+  loop_control:
+    loop_var: _vault_tok
+    label: "{{ _vault_tok.name }}"
+
+# Revoke every other admin-daily / monitoring-readonly token: the backlog
+# created by earlier deploys (one new pair per run, never revoked) and any
+# stray copy. Vault prefixes display names with "token-".
+- name: Pki Engine | List token accessors
   ansible.builtin.uri:
-    url: "{{ vault_addr }}/v1/auth/token/create"
-    method: POST
+    url: "{{ vault_addr }}/v1/auth/token/accessors"
+    method: LIST
     headers:
       X-Vault-Token: "{{ _vault_token }}"
-    body_format: json
-    body:
-      policies:
-        - vault-admin-full
-      display_name: "admin-daily"
-      ttl: "0"
-      no_parent: true
-      renewable: true
     ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
-  register: vault_admin_token_resp
+  register: _vault_token_accessors
   no_log: true
 
-- name: Pki Engine | Create read-only token for monitoring and reporting
+- name: Pki Engine | Look up token accessors
   ansible.builtin.uri:
-    url: "{{ vault_addr }}/v1/auth/token/create"
+    url: "{{ vault_addr }}/v1/auth/token/lookup-accessor"
     method: POST
     headers:
       X-Vault-Token: "{{ _vault_token }}"
     body_format: json
     body:
-      policies:
-        - vault-admin-readonly
-      display_name: "monitoring-readonly"
-      ttl: "0"
-      no_parent: true
-      renewable: true
+      accessor: "{{ item }}"
     ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
-  register: vault_readonly_token_resp
+      - 400
+      - 403
+  loop: >-
+    {{ _vault_token_accessors.json.data['keys'] | default([])
+       | reject('in', _vault_daily_token_accessors | default([])) | list }}
+  register: _vault_token_lookups
+  no_log: true
+
+- name: Pki Engine | Revoke superseded daily-use tokens
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/auth/token/revoke-accessor"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    body_format: json
+    body:
+      accessor: "{{ item }}"
+    ca_path: "{{ _vault_ca_path }}"
+    status_code:
+      - 204
+      - 400
+  loop: >-
+    {{ _vault_token_lookups.results | default([])
+       | selectattr('status', 'equalto', 200)
+       | selectattr('json.data.display_name', 'in',
+                    vault_daily_tokens | map(attribute='display_name') | map('regex_replace', '^', 'token-') | list)
+       | map(attribute='item') | list }}
+  changed_when: true
   no_log: true

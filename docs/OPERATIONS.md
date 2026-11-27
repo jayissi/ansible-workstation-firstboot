@@ -382,15 +382,86 @@ so TLS client auth completes without user prompts:
 
 ### Token Lifecycle
 
-| Parameter   | Value       | Purpose                                                                                                          |
-|-------------|-------------|------------------------------------------------------------------------------------------------------------------|
-| `token_ttl` | 72h         | Token lifetime (`vault_vaultpass_token_ttl`: 259200s)                                                            |
-| `max_ttl`   | 7 days      | Absolute token lifetime ceiling (604800s)                                                                        |
-| Policy      | `vaultpass` | CRUD access to `secret/data/vaultPass/*` (create, read, update, delete) plus `auth/token/revoke-self` for logout |
+| Parameter   | Value                                 | Purpose                                                                                    |
+|-------------|---------------------------------------|--------------------------------------------------------------------------------------------|
+| `token_ttl` | 72h                                   | Token lifetime (`vault_vaultpass_token_ttl`: 259200s)                                      |
+| `max_ttl`   | 7 days                                | Absolute token lifetime ceiling (604800s)                                                  |
+| Policies    | `vaultpass` + `vaultpass-user-<user>` | Shared `default/` read-only, own folder read/write, token self-ops (see VaultPass Folders) |
 
 Re-authentication is required after the token expires or is revoked.
-The `vaultpass` policy grants CRUD access to `secret/data/vaultPass/*`
-and `secret/metadata/vaultPass/*` (list).
+
+### VaultPass Folders
+
+VaultPass stores entries as `secret/vaultPass/<folder>/<site-pattern>`
+(KV v2 mount `secret/`, VaultPass "KV Store" `secret/vaultPass`). The
+entry name is the URL pattern (a regular expression) that VaultPass
+matches against the current tab, pre-filled with the tab's hostname.
+
+| Folder                      | VaultPass users                | Managed by                     |
+|-----------------------------|--------------------------------|--------------------------------|
+| `secret/vaultPass/default/` | **read-only** (shared entries) | Vault admins (CLI/UI)          |
+| `secret/vaultPass/<user>/`  | read/write, owner only         | the user (VaultPass "Add key") |
+
+Access follows the client certificate's CN. The cert role
+`vaultpass-<user>` accepts only `<user> - VaultPass` and grants the
+`vaultpass` and `vaultpass-user-<user>` policies. No role name is
+needed at login.
+
+**First use (once per user):** VaultPass → Options → log in → tick
+`default` and your own folder. When adding a key, choose **your own
+folder** in "Select where to store this key". VaultPass also lists
+`default`, but saving there fails ("Failed to save", 403) because it is
+read-only.
+
+**Add a user:** add the name to `vault_vaultpass_users` in
+`inventory/group_vars/all/main.yml`, then `make deploy`. This creates
+the folder, the policy and the cert role. If the user also has a Linux
+account, Vault Agent issues their client cert
+(`/etc/vault.d/certs/clients/<user>.crt`) and `vault-browser-cert-sync`
+imports it into their browsers.
+
+**Remove a user:** delete the name and run `make deploy`. Their role
+and policy are removed; their folder is kept. Delete the data
+deliberately when it is no longer needed:
+`vault kv metadata delete -mount=secret vaultPass/<user>/<entry>`.
+
+**Add a shared entry (admins):**
+
+```bash
+vault kv put -mount=secret vaultPass/default/github.com \
+    username=svc-ci password='…' title='GitHub CI'
+```
+
+The UI works too: Secrets → `secret` → `vaultPass/default/` → Create
+secret, with keys `username`, `password` and optional `title`. Avoid `/`
+in the entry name. Escape regex characters if you need an exact match
+(`github\.com`).
+
+**Privacy note:** VaultPass lists the store root to discover folders,
+so every VaultPass user can see all folder names (that is, usernames).
+Folder contents stay protected: a folder you cannot open shows as
+disabled in Options. Upstream VaultPass documents the same default
+policy.
+
+An **empty** folder holds the placeholder `^vaultpass-placeholder$`,
+because a KV folder only exists while it holds a key. The anchored
+pattern never matches a URL. Each deploy removes the placeholder from a
+folder once it holds real entries, and restores it if the folder
+becomes empty.
+
+### Vault KV Layout (reference)
+
+| Path                                   | Contents                                                | Written by                                         |
+|----------------------------------------|---------------------------------------------------------|----------------------------------------------------|
+| `secret/tokens/admin`, `.../readonly`  | One periodic daily-use token each (`token`, `accessor`) | Playbook: renewed each deploy, replaced if invalid |
+| `secret/tls/ca`                        | `root_ca`, `intermediate_ca`, `ca_chain` (public)       | Playbook, when changed                             |
+| `secret/tls/vault`, `secret/tls/nginx` | `certificate`, `ca_chain` (public, no private keys)     | Playbook, when changed                             |
+| `secret/grub`                          | GRUB password hash                                      | Playbook (first run)                               |
+| `secret/vaultPass/<folder>/<site>`     | VaultPass entries                                       | Users (own folder), admins (`default/`)            |
+
+`ssh-ca/` and `ssh-otp/` are SSH secrets engines, not KV stores. They
+hold roles and the CA configuration and create credentials on request,
+so the UI shows no stored data by design.
 
 ---
 
@@ -793,7 +864,31 @@ accessors and restarts `vault-agent`.
 make vault-rotate-secret-id     # rotate now (e.g. suspected exposure)
 ```
 
-`make verify` warns when fewer than 14 days remain.
+**Rotation only happens when Ansible runs.** Run `make deploy` (or the
+target above) at least every ~60 days. If the `secret_id` expires, the
+Agent cannot re-authenticate at its next token renewal (every 4h).
+The Vault TLS, Nginx and browser certificates then stop renewing and
+expire within hours to 3 days.
+
+**Expiry warning (on the host, no Vault token needed):** every run
+records the active expiry in `/etc/vault-agent.d/approle-secret-id.expires`.
+`vault-approle-expiry-check.timer` (5 min after boot, then daily)
+compares it with the clock:
+
+| Remaining  | Action                                                                                |
+|------------|---------------------------------------------------------------------------------------|
+| >= 14 days | OK (journal line); `/etc/motd.d/50-vault-approle` removed                             |
+| < 14 days  | `auth.warning` in the journal (`journalctl -t vault-approle`) + login banner via motd |
+| < 7 days   | Also fails the unit, so it shows in `systemctl --failed`                              |
+
+`make verify` asserts that the recorded expiry matches Vault, that a
+single `secret_id` exists, and that the timer is active. It also warns
+when fewer than 14 days remain.
+
+```bash
+sudo systemctl start vault-approle-expiry-check   # check now
+journalctl -t vault-approle -n 5
+```
 
 ---
 

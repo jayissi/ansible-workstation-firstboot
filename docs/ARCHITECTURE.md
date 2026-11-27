@@ -237,7 +237,8 @@ roles, AppRole authentication (bounded, loopback-bound `secret_id`,
 auto-rotated), Vault Agent for automated cert rotation,
 production TLS certificate swap, TLS client certificate authentication
 with OIDC provider integration (`cert_auth.yml`), KV secret seeding
-with CRUD policy (`vaultpass.yml`), browser trust store
+with per-user folders (`vaultpass.yml`: shared `default/` read-only,
+`<user>/` read/write, cert roles mapped by CN), browser trust store
 configuration (Root CA + VaultPass extension), and secrets backup to
 KV.
 
@@ -618,7 +619,7 @@ architecture for traffic reaching Vault through `https://vault.internal`:
 | 2     | TLS + identity        | `ssl_verify_client optional` with CA chain validation, active dual-CRL revocation checking (`ssl_crl` — Intermediate + Root CA with `nextUpdate` staleness, fail-closed), ECDSA-only cipher suite, session tickets off                                                         |
 | 3     | HTTP security         | HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, `Cache-Control: no-store` + `Pragma: no-cache`, CSP report-only with `report-uri /csp-report`, `server_tokens off`                                                                         |
 | 4     | Proxy trust           | `X-Client-Cert` set from the verified handshake (stripped on the gateway), `X-Forwarded-For`/`X-Real-IP` from `$remote_addr`, backend mTLS to Vault `:8202`; forwarded-header trust exists only on 8202 (not 8200)                                                             |
-| 5     | Vault authorization   | `auth/cert/login` via forwarded cert, ACL policies (`vaultpass` — CRUD), token TTLs (1h idle / 24h max)                                                                                                                                                                        |
+| 5     | Vault authorization   | `auth/cert/login` via forwarded cert, ACL policies (`vaultpass`: `default/` read-only + `vaultpass-user-<user>`: own folder CRUD; role per CN), token TTLs (1h idle / 24h max)                                                                                                 |
 | 6     | Operational assurance | Structured JSON access log (`vault_mtls_json`: cert fingerprint/DN/serial, TLS protocol/cipher, `$uri` without query string), CSP violation log, CRL hourly refresh ordered after Vault unseal, `nginx -t` (via `systemd-run`) before every reload, systemd sandboxing drop-in |
 
 Rate limiting applies at Layer 3: auth endpoints at `5r/s`, API

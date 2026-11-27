@@ -80,7 +80,7 @@ Open a browser on the workstation: `https://vault.internal`
 
 ```bash
 sudo vault-admin status                        # Vault health + seal status
-sudo vault-admin kv get secret/tokens/admin     # Admin token for UI login
+sudo vault-admin kv get secret/tokens/admin     # Admin token for UI login (one periodic token, renewed each deploy)
 ```
 
 `vault-admin` auto-decrypts the root token, trying TPM2+age first, then

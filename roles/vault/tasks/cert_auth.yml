@@ -48,28 +48,64 @@
   register: _vault_root_ca_cert
 
 # ------------------------------------------------------------------
-# Configure trusted CA certificate for client cert auth
+# Per-user cert roles (KNOWN_ISSUES #52): access follows the cert CN
 # ------------------------------------------------------------------
-- name: Cert Auth | Configure workstation-client trusted CA
+# One role per VaultPass user; each accepts only that user's CN, so exactly
+# one role matches any certificate and a blank role name (Vault UI,
+# VaultPass) still logs in deterministically.
+- name: Cert Auth | Configure per-user VaultPass cert roles
   ansible.builtin.uri:
-    url: "{{ vault_addr }}/v1/auth/cert/certs/workstation-client"
+    url: "{{ vault_addr }}/v1/auth/cert/certs/vaultpass-{{ item }}"
     method: POST
     headers:
       X-Vault-Token: "{{ _vault_token }}"
     body_format: json
     body:
-      display_name: "workstation-client"
+      display_name: "vaultpass-{{ item }}"
       certificate: "{{ (_vault_int_ca_cert.content | b64decode) ~ '\n' ~ (_vault_root_ca_cert.content | b64decode) }}"
       allowed_common_names:
-        - "{{ vault_pki_client_auth_cn }}"
+        - "{{ item }}{{ vault_vaultpass_cn_suffix }}"
       token_policies:
         - "{{ vault_vaultpass_policy_name }}"
+        - "vaultpass-user-{{ item }}"
       token_ttl: "{{ vault_client_cert_ttl }}"
       token_max_ttl: "{{ vault_client_cert_max_ttl }}"
     ca_path: "{{ _vault_ca_path }}"
     status_code:
       - 200
       - 204
+  loop: "{{ vault_vaultpass_users }}"
+
+- name: Cert Auth | List cert roles
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/auth/cert/certs"
+    method: LIST
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    ca_path: "{{ _vault_ca_path }}"
+    status_code:
+      - 200
+      - 404
+  register: _vault_cert_roles
+
+# workstation-client is the pre-#52 single role (admin CN, shared policy
+# only). Left in place it could match the admin's cert first and grant no
+# personal folder. Stale vaultpass-<user> roles belong to removed users.
+- name: Cert Auth | Remove legacy and stale cert roles
+  ansible.builtin.uri:
+    url: "{{ vault_addr }}/v1/auth/cert/certs/{{ item }}"
+    method: DELETE
+    headers:
+      X-Vault-Token: "{{ _vault_token }}"
+    ca_path: "{{ _vault_ca_path }}"
+    status_code:
+      - 204
+  loop: >-
+    {{ (_vault_cert_roles.json.data['keys'] | default([]) if _vault_cert_roles.status == 200 else [])
+       | select('match', '^(workstation-client|vaultpass-.*)$')
+       | reject('in', vault_vaultpass_users | map('regex_replace', '^', 'vaultpass-') | list)
+       | list }}
+  changed_when: true
 
 # ------------------------------------------------------------------
 # OIDC Identity Provider setup
@@ -219,6 +255,18 @@
     owner: "{{ vault_user }}"
     group: "{{ vault_group }}"
     mode: "0640"
+  notify: Restart vault-agent
+
+- name: Cert Auth | Deploy per-user client cert Vault Agent templates
+  ansible.builtin.template:
+    src: client-auth-combined.tpl.j2
+    dest: "{{ vault_config_dir }}/templates/client-auth-{{ item }}-combined.tpl"
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: "0640"
+  vars:
+    _client_cn: "{{ item }}{{ vault_vaultpass_cn_suffix }}"
+  loop: "{{ _vault_vaultpass_cert_users_extra | default([]) }}"
   notify: Restart vault-agent
 
 - name: Cert Auth | Deploy break-glass SSH cert Vault Agent template
@@ -428,6 +476,9 @@
 
         [Path]
         PathModified={{ vault_cert_dir }}/client.crt
+        {% for u in vault_vaultpass_users | reject('equalto', common_admin_user) %}
+        PathModified={{ vault_cert_dir }}/clients/{{ u }}.crt
+        {% endfor %}
 
         [Install]
         WantedBy=multi-user.target

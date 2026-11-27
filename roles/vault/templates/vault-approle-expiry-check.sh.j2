@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# {{ ansible_managed | default('Managed by Ansible') }}
+# vault-approle-expiry-check -- warn before the Vault Agent AppRole
+# secret_id expires (KNOWN_ISSUES #51).
+#
+# Rotation is done by Ansible only (make deploy rotates below 30 days
+# remaining; make vault-rotate-secret-id forces it). If nobody deploys,
+# the secret_id expires, Vault Agent can no longer re-authenticate and
+# every Agent-renewed certificate (Vault TLS, Nginx, browser client cert)
+# stops renewing. This daily check needs no Vault token: Ansible records
+# Vault's expiration_time in {{ vault_approle_expiry_file }}.
+#
+#   >= WARN_DAYS : OK, motd notice removed
+#   <  WARN_DAYS : auth.warning in the journal + /etc/motd.d notice
+#   <  CRIT_DAYS : also exit 1 (unit shows in `systemctl --failed`)
+#
+# WARN_DAYS / CRIT_DAYS environment overrides exist for testing.
+set -euo pipefail
+
+FILE="{{ vault_approle_expiry_file }}"
+MOTD="/etc/motd.d/50-vault-approle"
+WARN_DAYS="${WARN_DAYS:-{{ vault_approle_expiry_warn_days }}}"
+CRIT_DAYS="${CRIT_DAYS:-{{ vault_approle_expiry_crit_days }}}"
+TAG="vault-approle"
+
+if [[ ! -s "$FILE" ]]; then
+	logger -t "$TAG" -p auth.notice "no recorded secret_id expiry (${FILE}); run make deploy"
+	echo "no recorded expiry"
+	exit 0
+fi
+
+expires=$(head -1 "$FILE")
+exp_epoch=$(date -d "$expires" +%s)
+days=$(((exp_epoch - $(date +%s)) / 86400))
+
+if ((days >= WARN_DAYS)); then
+	rm -f "$MOTD"
+	echo "OK: AppRole secret_id expires in ${days} day(s) (${expires})"
+	exit 0
+fi
+
+if ((days < 0)); then
+	msg="Vault Agent AppRole secret_id EXPIRED on ${expires}: certificate renewal has stopped"
+else
+	msg="Vault Agent AppRole secret_id expires in ${days} day(s) (${expires})"
+fi
+logger -t "$TAG" -p auth.warning "${msg}; rotate with: make vault-rotate-secret-id"
+mkdir -p "$(dirname "$MOTD")"
+printf '*** %s.\n*** Rotate from the Ansible controller: make vault-rotate-secret-id\n' "$msg" >"$MOTD"
+chmod 0644 "$MOTD"
+echo "WARN: ${msg}"
+((days >= CRIT_DAYS)) || exit 1

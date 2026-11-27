@@ -64,6 +64,16 @@ template {
   perms       = 0400
   command     = "/usr/local/bin/vault-agent-split-client-cert"
 }
+{% for u in _vault_vaultpass_cert_users_extra | default([]) %}
+
+# Per-user VaultPass client cert for {{ u }} (KNOWN_ISSUES #52)
+template {
+  source      = "{{ vault_config_dir }}/templates/client-auth-{{ u }}-combined.tpl"
+  destination = "{{ vault_agent_run_dir }}/client-auth-{{ u }}-combined.tmp"
+  perms       = 0400
+  command     = "/usr/local/bin/vault-agent-split-client-cert {{ vault_agent_run_dir }}/client-auth-{{ u }}-combined.tmp {{ vault_cert_dir }}/clients/{{ u }}.crt {{ vault_cert_dir }}/clients/{{ u }}.key"
+}
+{% endfor %}
 {% endif %}
 
 {% if vault_ssh_enabled | default(false) | bool %}

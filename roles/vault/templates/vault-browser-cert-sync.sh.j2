@@ -16,20 +16,19 @@
 # locked database counts as failed and is retried by the timer.
 set -euo pipefail
 
-CERT="{{ vault_cert_dir }}/client.crt"
-KEY="{{ vault_cert_dir }}/client.key"
 NICK="{{ vault_browser_cert_nickname }}"
+ADMIN="{{ common_admin_user }}"
+CERT_DIR="{{ vault_cert_dir }}"
 STATUS="/run/vault-browser-cert-sync.status"
 USERS=({% for u in vault_browser_cert_sync_users %}"{{ u }}"{% if not loop.last %} {% endif %}{% endfor %})
 
 log() { echo "vault-browser-cert-sync: $*"; }
 
-if [[ ! -s "$CERT" || ! -s "$KEY" ]]; then
-	log "no client certificate rendered yet"
-	echo "imported=0 current=0 failed=0" >"$STATUS"
-	exit 0
-fi
-want=$(openssl x509 -in "$CERT" -noout -serial | cut -d= -f2)
+# Per-user cert (KNOWN_ISSUES #52): the admin keeps the historic paths,
+# other VaultPass users get {{ vault_cert_dir }}/clients/<user>.crt|key.
+cert_base() {
+	if [[ "$1" == "$ADMIN" ]]; then echo "$CERT_DIR/client"; else echo "$CERT_DIR/clients/$1"; fi
+}
 
 imported=0
 current=0
@@ -38,6 +37,13 @@ failed=0
 for user in "${USERS[@]}"; do
 	home=$(getent passwd "$user" | cut -d: -f6) || continue
 	[[ -n "$home" && -d "$home" ]] || continue
+	CERT="$(cert_base "$user").crt"
+	KEY="$(cert_base "$user").key"
+	if [[ ! -s "$CERT" || ! -s "$KEY" ]]; then
+		log "no client certificate rendered yet for ${user}"
+		continue
+	fi
+	want=$(openssl x509 -in "$CERT" -noout -serial | cut -d= -f2)
 	gid=$(id -g "$user")
 	# setpriv, not runuser: runuser opens a PAM session per call, which
 	# flooded the journal/audit log on every 15-minute run.

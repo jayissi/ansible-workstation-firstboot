@@ -115,6 +115,18 @@ vault_local_hostname: vault.internal
 vault_status_hostname: "status.{{ vault_local_hostname }}"
 vault_ssh_gateway_hostname: vault-ssh-gateway.internal
 
+# ---------------------------------------------------------------------------
+# VaultPass users -- SINGLE SOURCE OF TRUTH (KNOWN_ISSUES #52)
+# ---------------------------------------------------------------------------
+# Each user gets a personal read/write folder secret/vaultPass/<user>/ and a
+# cert-auth role accepting only CN "<user> - VaultPass". The shared
+# secret/vaultPass/default/ is read-only for VaultPass users (admins curate
+# it from the Vault CLI/UI). Users that exist as Linux accounts also get an
+# Agent-issued client cert synced into their browsers. Add a user here and
+# run `make deploy`; removing one deletes their role/policy, never their data.
+vault_vaultpass_users:
+  - "{{ common_admin_user }}"
+
 dns_local_data:
   - name: "{{ vault_local_hostname }}"
     type: 'A'
@@ -1094,6 +1106,7 @@ fapolicyd_add_trusted_paths:
   - /usr/local/bin/vault-enroll-client-cert
   - /usr/local/bin/vault-agent-split-client-cert
   - /usr/local/bin/vault-browser-cert-sync
+  - /usr/local/bin/vault-approle-expiry-check
   - /usr/local/bin/nginx-crl-update
 
 # ---------------------------------------------------------------------------
